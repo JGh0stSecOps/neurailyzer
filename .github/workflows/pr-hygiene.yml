@@ -12,6 +12,7 @@ jobs:
         env:
           BRANCH: ${{ github.head_ref }}
         run: |
+          if [ "${{ github.actor }}" = "dependabot[bot]" ]; then echo "dependabot bump — branch-name rule N/A"; exit 0; fi
           if echo "$BRANCH" | grep -qE '^(feature|fix|docs|chore|ci|refactor|perf|test)/[a-z0-9][a-z0-9._-]*$'; then
             echo "branch name ok: $BRANCH"
           else
@@ -25,6 +26,7 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
+          if [ "${{ github.actor }}" = "dependabot[bot]" ]; then echo "dependabot bump — title set by config"; exit 0; fi
           pattern='^(feat|fix|docs|refactor|test|chore|perf|ci|build|revert)(\([a-z0-9._-]+\))?!?: .+'
           if echo "$TITLE" | grep -qE "$pattern"; then
             echo "PR title ok"
@@ -40,6 +42,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          if [ "${{ github.actor }}" = "dependabot[bot]" ]; then echo "dependabot bump — commits set by config"; exit 0; fi
           pattern='^(feat|fix|docs|refactor|test|chore|perf|ci|build|revert)(\([a-z0-9._-]+\))?!?: .+'
           bad=0
           for sha in $(git rev-list "$BASE".."$HEAD"); do
