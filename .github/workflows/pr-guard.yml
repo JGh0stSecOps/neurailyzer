@@ -19,7 +19,7 @@ jobs:
     # a maintainer can bypass a false positive by adding the 'guard:ok' label
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'guard:ok') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
@@ -50,7 +50,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: review diff with an LLM
         env:
           REVIEW_URL: ${{ secrets.LLM_REVIEW_URL }}
