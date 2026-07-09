@@ -1,0 +1,56 @@
+name: pr-hygiene
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  branch-name:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce <type>/<name> branch naming
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          if echo "$BRANCH" | grep -qE '^(feature|fix|docs|chore|ci|refactor|perf|test)/[a-z0-9][a-z0-9._-]*$'; then
+            echo "branch name ok: $BRANCH"
+          else
+            echo "::error::Branch '$BRANCH' must be <type>/<name>, type in: feature, fix, docs, chore, ci, refactor, perf, test (e.g. feature/openwebui-adapter)"
+            exit 1
+          fi
+  conventional-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR title is a Conventional Commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|refactor|test|chore|perf|ci|build|revert)(\([a-z0-9._-]+\))?!?: .+'
+          if echo "$TITLE" | grep -qE "$pattern"; then
+            echo "PR title ok"
+          else
+            echo "::error::PR title must be a Conventional Commit, e.g. 'feat(openwebui): introspect the schema'. Got: $TITLE"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit is a Conventional Commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pattern='^(feat|fix|docs|refactor|test|chore|perf|ci|build|revert)(\([a-z0-9._-]+\))?!?: .+'
+          bad=0
+          for sha in $(git rev-list "$BASE".."$HEAD"); do
+            subject=$(git log -1 --format=%s "$sha")
+            case "$subject" in
+              Merge*) continue ;;
+            esac
+            if ! echo "$subject" | grep -qE "$pattern"; then
+              echo "::error::Non-conventional commit ${sha}: $subject"
+              bad=1
+            fi
+          done
+          if [ "$bad" -eq 0 ]; then echo "all commits ok"; fi
+          exit "$bad"

@@ -15,21 +15,29 @@ Never push directly to `dev` or `main` — both are protected.
 
 ## The flow
 
-1. Branch from `dev`: `git switch -c feat/short-name dev`
+1. Branch from `dev`: `git switch -c feature/short-name dev` (branch name must be `<type>/<name>` — see below)
 2. Make a **small, focused** change (the guard and the reviewer both prefer small PRs).
 3. Run locally: `ruff check . && ruff format . && mypy && pytest`
 4. Open a PR **into `dev`**. Fill in the template.
 5. CI, security, and the guard must be green; a maintainer reviews and merges.
 
+## Commits & branch names
+
+Both are **enforced by CI** (`pr-hygiene`), for humans and agents alike:
+
+- **Branch names** must be `<type>/<name>`, where `<type>` is one of `feature`, `fix`, `docs`, `chore`, `ci`, `refactor`, `perf`, `test` — e.g. `feature/openwebui-adapter`, `fix/restore-conflict-mode`.
+- **The PR title and every commit** must follow [Conventional Commits](https://www.conventionalcommits.org): `type(optional-scope): summary` — e.g. `feat(openwebui): introspect the live schema`. Allowed types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `ci`, `build`, `revert`.
+
 ## Checks that must pass
 
 | Check | What |
 |---|---|
-| `ci / lint` | ruff (lint + format) + mypy strict |
-| `ci / test` | pytest on 3.11 + 3.12, coverage not decreasing |
-| `security / gitleaks` | no secrets |
-| `security / codeql` | no new SAST findings |
-| `pr-guard / injection-slop-scan` | no prompt-injection, hidden unicode, or slop in the diff |
+| `lint` | ruff (lint + format) + mypy strict |
+| `test (3.11)` / `test (3.12)` | pytest on 3.11 + 3.12, coverage not decreasing |
+| `secret scan` | gitleaks — no secrets |
+| `injection / slop / hidden-unicode scan` | no prompt-injection, hidden unicode, or slop in the diff |
+| `branch-name` | branch is `<type>/<name>` |
+| `conventional-commits` | PR title + commits follow Conventional Commits |
 
 ## The guard
 
