@@ -1,0 +1,10 @@
+# Extend gitleaks' default rules; add project allowlist here.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlisted paths / placeholders"
+paths = [
+  '''(.*)?README\.md''',
+  '''docs/.*''',
+]

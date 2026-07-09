@@ -1,0 +1,60 @@
+name: pr-guard
+
+# The "LLM firewall": screens every PR (human or agent) for prompt-injection
+# payloads, hidden/deceptive unicode, and low-effort AI "slop" BEFORE a human or
+# model reviews it — so a malicious PR can't steer the reviewer. See
+# CONTRIBUTING.md#the-guard and docs/DESIGN.md#threat-model.
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  injection-slop-scan:
+    name: injection / slop / hidden-unicode scan
+    runs-on: ubuntu-latest
+    # a maintainer can bypass a false positive by adding the 'guard:ok' label
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'guard:ok') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: scan changed files
+        run: |
+          BASE='${{ github.event.pull_request.base.sha }}'
+          HEAD='${{ github.event.pull_request.head.sha }}'
+          git diff --name-only "$BASE" "$HEAD" > changed.txt || true
+          echo "changed files:"; cat changed.txt
+          if [ -s changed.txt ]; then
+            # only pass files that still exist (deletions drop out)
+            xargs -a changed.txt -I{} sh -c 'test -f "{}" && echo "{}"' > exist.txt || true
+            if [ -s exist.txt ]; then
+              xargs -a exist.txt python scripts/scan_injection.py
+            fi
+          fi
+
+  # Optional deeper pass: send the diff to an LLM (any LLM endpoint you configure)
+  # for a semantic injection + quality verdict. Disabled until the secret points
+  # at a reviewer endpoint — then flip `if:` to true.
+  llm-review:
+    name: llm review (optional)
+    runs-on: ubuntu-latest
+    if: false
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: review diff with an LLM
+        env:
+          REVIEW_URL: ${{ secrets.LLM_REVIEW_URL }}
+          REVIEW_KEY: ${{ secrets.LLM_REVIEW_KEY }}
+        run: |
+          echo "stub: POST the PR diff to \$REVIEW_URL (your configured endpoint), parse verdict,"
+          echo "fail on 'block'. Keep the reviewer prompt injection-hardened — the diff is untrusted input."

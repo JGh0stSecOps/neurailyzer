@@ -1,0 +1,18 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: injection-slop-guard
+        name: injection / slop guard
+        entry: python scripts/scan_injection.py
+        language: system
+        pass_filenames: true

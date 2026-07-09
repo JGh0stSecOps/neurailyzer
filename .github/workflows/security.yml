@@ -1,0 +1,35 @@
+name: security
+
+# Free, no-GHAS-required security posture:
+#   - secret scan : gitleaks (binary — the licensed action isn't needed for orgs)
+#   - SAST        : ruff's `S` (flake8-bandit) rules, run in the `lint` job (ci.yml)
+#   - deps        : dependabot alerts + weekly update PRs
+#   - injection   : the pr-guard workflow
+# (CodeQL was dropped: it needs GitHub Advanced Security, which this repo's plan
+#  doesn't offer. Re-add a codeql job if GHAS is enabled later.)
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  schedule:
+    - cron: "0 6 * * 1" # weekly Monday
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: run gitleaks (binary)
+        run: |
+          V=8.18.4
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_linux_x64.tar.gz" -o gl.tgz
+          tar -xzf gl.tgz gitleaks
+          ./gitleaks detect --source . --redact --no-banner --config .gitleaks.toml
