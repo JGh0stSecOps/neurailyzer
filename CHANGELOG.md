@@ -37,6 +37,22 @@ vacuously:
 - **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
   file outside the target tree. It now refuses rather than following.
 
+### Changed — a wipe now says what it could NOT clean
+- Presets carry `caveats`, printed on **every** wipe and `list-state`, not
+  just in `detect`. Enabling the `opencode` preset and wiping days later used
+  to print a clean *"verified"* while chat history sat untouched in
+  `opencode*.db` (the credential-bearing database the preset deliberately
+  protects). The success line is also narrower now: *"everything the
+  configured wipers cover is gone"* rather than *"state matches the plan"*.
+
+### Fixed — a harness dir linked elsewhere is skipped, not emptied
+- **`~/.claude/downloads -> ~/src/myrepo` emptied the repo.** The link lives
+  inside the harness directory, so it looked like the harness's own scratch;
+  a pre-release verifier destroyed a real git checkout this way. A preset
+  target that resolves outside everywhere its own preset legitimately claims
+  is now skipped and reported. A symlinked *harness root* (stow, chezmoi) is
+  still followed — that redirection is the user's intent, not an accident.
+
 ### Fixed — release blockers
 A pre-release readiness pass (three verifiers driving the real CLI in
 disposable fake HOMEs) found two blockers and two majors:

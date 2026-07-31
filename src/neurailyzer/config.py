@@ -227,9 +227,16 @@ class Config:
     remote: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     #: ids of the harness presets in play (drives the liveness guard).
     presets: tuple[str, ...] = ()
+    #: what the enabled presets cannot clean -- printed on every wipe so a
+    #: "verified" result is never read as more than it means.
+    caveats: tuple[str, ...] = ()
     #: (as written, where it actually resolves) for targets that are symlinks
     #: -- surfaced in every plan so a redirected wipe is never a surprise.
     symlinked_targets: tuple[tuple[str, str], ...] = ()
+    #: (preset, path, destination) for preset targets that resolve outside
+    #: their own harness root. These are SKIPPED: a link out of the harness
+    #: dir points at something that is not that harness's scratch.
+    escaped_targets: tuple[tuple[str, str, str], ...] = ()
     snapshot_dir: Path = field(default_factory=lambda: DEFAULT_SNAPSHOT_DIR.expanduser().resolve())
     retention: int = DEFAULT_RETENTION
     #: where this config was loaded from (None = defaults, no file found).
@@ -304,6 +311,10 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
     preset_targets: dict[str, list[Path]] = {"session": [], "sandbox": []}
     preset_keep_paths: list[Path] = []
     preset_keep_patterns: list[str] = []
+    #: (preset, template path, where it actually resolves) for preset targets
+    #: that point outside their own harness root -- skipped, never wiped.
+    escaped_targets: list[tuple[str, str, str]] = []
+    preset_caveats: list[str] = []
     if enabled:
         from . import presets as presets_mod
 
@@ -314,8 +325,38 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                     f"[presets] unknown preset {pid!r} "
                     f"(known: {', '.join(sorted(presets_mod.REGISTRY))})"
                 )
-            preset_targets["session"].extend(presets_mod.expand_existing(preset.session))
-            preset_targets["sandbox"].extend(presets_mod.expand_existing(preset.sandbox))
+            # Everywhere this preset legitimately claims: its detect roots and
+            # the paths its own templates name, in resolved form. A preset may
+            # span several trees (opencode follows XDG across data/cache/state
+            # /tmp), so "inside the detect root" is too strict -- what matters
+            # is that a target still lands where its own templates say.
+            # The harness ROOT may legitimately be a symlink -- stow and
+            # chezmoi keep ~/.claude in a dotfiles repo -- so its destination
+            # counts as the harness's own ground.
+            own = {r.resolve() for r in presets_mod.expand_existing(preset.detect)}
+            # Sub-targets contribute only when they are NOT symlinks. Including
+            # a link's destination here would be circular: the very redirect
+            # being checked would authorize itself.
+            own |= {
+                r.resolve()
+                for r in presets_mod.expand_existing((*preset.session, *preset.sandbox))
+                if not r.is_symlink()
+            }
+            for scope_name, templates in (
+                ("session", preset.session),
+                ("sandbox", preset.sandbox),
+            ):
+                for path in presets_mod.expand_existing(templates):
+                    resolved = path.resolve()
+                    if any(resolved == root or root in resolved.parents for root in own):
+                        preset_targets[scope_name].append(path)
+                        continue
+                    # e.g. ~/.claude/downloads -> ~/src/myrepo. Following that
+                    # link would empty a directory with nothing to do with the
+                    # harness -- a real git repo was destroyed this way during
+                    # pre-release testing.
+                    escaped_targets.append((pid, str(path), str(resolved)))
+            preset_caveats.extend(preset.caveats)
             kp, kpat = _split_keep(f"presets.{pid}", list(preset.keep))
             preset_keep_paths.extend(kp)
             preset_keep_patterns.extend(kpat)
@@ -432,6 +473,8 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         targets=targets,
         remote=remote,
         symlinked_targets=tuple(symlinked_targets),
+        escaped_targets=tuple(escaped_targets),
+        caveats=tuple(dict.fromkeys(preset_caveats)),
         presets=tuple(enabled),
         snapshot_dir=snapshot_dir,
         retention=retention,

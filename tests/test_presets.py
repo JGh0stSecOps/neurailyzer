@@ -312,3 +312,112 @@ def test_claude_config_dir_relocation_is_honored(
     assert (proj / "memory" / "MEMORY.md").read_text() == "DURABLE"
     assert not (proj / "sess.jsonl").exists()
     assert (relocated / "settings.json").exists()
+
+
+def test_a_harness_dir_linked_elsewhere_is_skipped_not_emptied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`~/.claude/downloads -> ~/src/myrepo` must not empty the repo.
+
+    A pre-release verifier destroyed a real git checkout this way: the link
+    lives inside the harness dir, so it looked like the harness's own scratch.
+    """
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    (claude / "shell-snapshots").mkdir(parents=True)
+    (claude / "shell-snapshots" / "snap.sh").write_text("real scratch")
+    repo = home / "src" / "myrepo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "main.py").write_text("real work")
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main")
+    try:
+        (claude / "downloads").symlink_to(repo, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    cfg_file = tmp_path / "c.toml"
+    cfg_file.write_text(
+        '[presets]\nenabled = ["claude-code"]\n'
+        f'\n[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    conf = load(cfg_file)
+    assert conf.escaped_targets, "the redirected target was not flagged"
+
+    PathWiper("sandbox", conf.roots_for("sandbox"), conf.keep).commit()
+    assert (repo / "main.py").read_text() == "real work"
+    assert (repo / ".git" / "HEAD").exists()
+    # and the harness's genuine scratch was still wiped, so this is not a
+    # test of the wiper simply doing nothing
+    assert not (claude / "shell-snapshots" / "snap.sh").exists()
+
+
+def test_a_symlinked_harness_root_is_still_wiped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """stow/chezmoi keep ~/.claude in a dotfiles repo. That redirection is
+    legitimate and must NOT be mistaken for an escaped target."""
+    home = tmp_path / "home"
+    home.mkdir()
+    real = tmp_path / "dotfiles" / "claude"
+    (real / "shell-snapshots").mkdir(parents=True)
+    (real / "shell-snapshots" / "snap.sh").write_text("scratch")
+    try:
+        (home / ".claude").symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    cfg_file = tmp_path / "c.toml"
+    cfg_file.write_text(
+        '[presets]\nenabled = ["claude-code"]\n'
+        f'\n[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    conf = load(cfg_file)
+    assert not conf.escaped_targets, "a stow-managed harness root was refused"
+    PathWiper("sandbox", conf.roots_for("sandbox"), conf.keep).commit()
+    assert not (real / "shell-snapshots" / "snap.sh").exists()
+
+
+def test_an_opencode_wipe_says_what_it_did_not_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """opencode's chat history lives in the credential-bearing DB this preset
+    deliberately protects. A user who enabled the preset days ago must not
+    read "verified" and conclude their chats are gone -- they are not."""
+    from typer.testing import CliRunner
+
+    from neurailyzer.cli import app
+
+    home = tmp_path / "home"
+    data = home / ".local" / "share" / "opencode"
+    (data / "storage").mkdir(parents=True)
+    (data / "storage" / "msg.json").write_text("{}")
+    (data / "opencode.db").write_bytes(b"SQLite format 3\x00sessions+credentials")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    for var in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    cfg_file = tmp_path / "c.toml"
+    cfg_file.write_text(
+        '[presets]\nenabled = ["opencode"]\n'
+        f'\n[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    runner = CliRunner()
+    for args in (["wipe", "session"], ["wipe", "session", "--commit", "--force"]):
+        result = runner.invoke(app, ["--config", str(cfg_file), *args])
+        assert result.exit_code == 0, result.output
+        flat = result.stdout.replace("\n", " ")
+        assert "caveat" in flat, f"no caveat on `{' '.join(args)}`"
+        assert "NOT wiped" in flat
+    assert (data / "opencode.db").exists()  # and it really is still there

@@ -53,6 +53,10 @@ class Preset:
     #: never wiped; merged into the keep-list whenever this preset is enabled
     keep: tuple[str, ...] = ()
     notes: str = ""
+    #: Things this preset CANNOT clean, surfaced on every wipe -- not just in
+    #: `detect`. A user who enabled a preset days ago must not read
+    #: "verified" and conclude their chats are gone when they are not.
+    caveats: tuple[str, ...] = ()
 
 
 def _expand(template: str) -> Path:
@@ -547,6 +551,13 @@ OPENCODE = Preset(
         "$XDG_CONFIG_HOME/opencode",
         "~/.config/opencode",
         "~/.opencode",
+    ),
+    caveats=(
+        "opencode: chat history in opencode*.db is NOT wiped -- that database "
+        "is also a credential store, so deleting the file would take your "
+        "provider logins with it. Only the legacy JSON session trees and "
+        "caches were cleared. Clearing chats from the DB needs row-level "
+        "deletes (a future sqlite wiper).",
     ),
     notes="Layout source-verified against anomalyco/opencode @ da59457 "
     "(core/src/global.ts XDG roots, database/database.ts, auth/index.ts, "
