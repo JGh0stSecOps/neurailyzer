@@ -131,15 +131,28 @@ def _hash_file(path: Path) -> str:
 
 
 def _walk_tree(root: Path) -> tuple[list[Path], list[Path], list[Path]]:
-    """(files, dirs, symlinks) under *root*, never following symlinks."""
+    """(files, dirs, symlinks) under *root*, never following symlinks.
+
+    Read errors RAISE rather than being swallowed: a snapshot that silently
+    omits an unreadable subtree cannot restore it later, and the whole point
+    of taking one before a wipe is that it is complete. The wiper reports
+    such errors; the snapshot must refuse outright and fail the wipe closed.
+    """
     files: list[Path] = []
     dirs: list[Path] = []
     links: list[Path] = []
+
+    def _raise(exc: OSError) -> None:
+        raise SnapshotError(
+            f"cannot read {exc.filename} while taking a snapshot "
+            f"({exc.strerror}) -- refusing to record an incomplete restore point"
+        ) from exc
+
     if root.is_symlink() or not root.exists():
         return files, dirs, links
     if root.is_file():
         return [root], dirs, links
-    for cur, dnames, fnames in os.walk(root, followlinks=False):
+    for cur, dnames, fnames in os.walk(root, followlinks=False, onerror=_raise):
         cur_p = Path(cur)
         for d in list(dnames):
             p = cur_p / d
@@ -436,6 +449,14 @@ class SnapshotStore:
             os.utime(dest, (rec.mtime, rec.mtime))
         for (target, relpath), drec in sorted(wanted_dirs.items()):
             dest = _dest(target, relpath, dir_roots)
+            if keep.protects(dest):
+                # the file and link loops already do this; the dirs loop
+                # silently re-moded a hardened directory (0700 -> 0755) and
+                # still printed "restored."
+                # `protects` only, never `shelters`: a directory that merely
+                # CONTAINS a keep entry must still be recreated.
+                plan.skipped_keep.append(str(dest))
+                continue
             if not commit:
                 continue
             if not dest.is_dir():

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from . import __version__, core
@@ -63,7 +64,7 @@ def _load_config() -> Config:
     try:
         return load(_state["config"])
     except ConfigError as exc:
-        err_console.print(f"[red]config error:[/red] {exc}")
+        err_console.print(f"[red]config error:[/red] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
 
 
@@ -147,9 +148,9 @@ def detect(
         console.print(f"[bold]{p.name}[/bold] ({p.id}) -- {p.vendor}")
         for scope, templates in (("session", p.session), ("sandbox", p.sandbox)):
             for path in presets_mod.expand_existing(templates):
-                console.print(f"  {scope}: {path}")
+                console.print(f"  {scope}: {escape(str(path))}")
         for raw in p.keep:
-            console.print(f"  [cyan]keep:[/cyan] {raw}")
+            console.print(f"  [cyan]keep:[/cyan] {escape(raw)}")
         if p.notes:
             console.print(f"  [dim]{p.notes}[/dim]")
     if not enable:
@@ -207,7 +208,7 @@ def snapshot(
     if list_:
         snaps = store.list()
         for bad in store.corrupt:
-            err_console.print(f"[red]unreadable snapshot[/red] {bad}")
+            err_console.print(f"[red]unreadable snapshot[/red] {escape(bad)}")
         if not snaps:
             console.print("[dim]no snapshots yet[/dim]")
             return
@@ -259,8 +260,8 @@ def wipe(
 
     for written, actual in cfg.symlinked_targets:
         console.print(
-            f"[yellow]note:[/yellow] {written} is a symlink -- the wipe lands on "
-            f"[bold]{actual}[/bold]"
+            f"[yellow]note:[/yellow] {escape(written)} is a symlink -- the wipe lands "
+            f"on [bold]{escape(actual)}[/bold]"
         )
     if not commit:
         plans = core.plan_wipe(cfg, scopes)
@@ -334,7 +335,7 @@ def _liveness_ok(
     for entry in live:
         err_console.print(f"[yellow]{entry.advice}[/yellow]")
         for reason in entry.reasons:
-            err_console.print(f"    [dim]{reason}[/dim]")
+            err_console.print(f"    [dim]{escape(reason)}[/dim]")
     if force:
         console.print("[red]--force:[/red] wiping anyway.")
         return True
@@ -350,11 +351,11 @@ def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
     for p in plans:
         covered.add(p.scope)
         console.print(
-            f"  - [bold]{p.scope}[/bold]: {p.description} "
+            f"  - [bold]{p.scope}[/bold]: {escape(p.description)} "
             f"[dim]({p.item_count} item(s), {p.bytes_total} bytes)[/dim]"
         )
         for note in p.notes:
-            console.print(f"      [cyan]{note}[/cyan]")
+            console.print(f"      [cyan]{escape(note)}[/cyan]")
     for s in scopes:
         if s in covered:
             continue
@@ -411,7 +412,7 @@ def restore(
             ids = entry.get("item_ids") or []
             console.print(f"  [bold]{provider}[/bold]: {len(ids)} object(s)")
             for item in ids[:20]:
-                console.print(f"    [dim]{item}[/dim]")
+                console.print(f"    [dim]{escape(str(item))}[/dim]")
             if len(ids) > 20:
                 console.print(f"    [dim]... and {len(ids) - 20} more[/dim]")
     if commit:
@@ -441,13 +442,13 @@ def restore(
 
 def _print_restore(plan: RestorePlan) -> None:
     for p in plan.restored:
-        console.print(f"  [green]restore[/green] {p}")
+        console.print(f"  [green]restore[/green] {escape(p)}")
     for p in plan.removed:
-        console.print(f"  [red]remove[/red]  {p} [dim](did not exist at that time)[/dim]")
+        console.print(f"  [red]remove[/red]  {escape(p)} [dim](did not exist at that time)[/dim]")
     for p in plan.skipped_keep:
-        console.print(f"  [cyan]keep[/cyan]    {p}")
+        console.print(f"  [cyan]keep[/cyan]    {escape(p)}")
     for e in plan.errors:
-        err_console.print(f"  [red]error[/red]   {e}")
+        err_console.print(f"  [red]error[/red]   {escape(e)}")
     if plan.change_count == 0:
         console.print("  [dim]state already matches this snapshot[/dim]")
 

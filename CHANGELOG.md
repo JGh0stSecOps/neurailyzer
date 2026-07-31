@@ -37,6 +37,26 @@ vacuously:
 - **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
   file outside the target tree. It now refuses rather than following.
 
+### Fixed — release blockers
+A pre-release readiness pass (three verifiers driving the real CLI in
+disposable fake HOMEs) found two blockers and two majors:
+- **Restore silently re-moded keep-listed directories.** The file and link
+  loops consulted the keep-list; the directory loop did not — so a directory
+  the user hardened to `0700` came back `0755`, unreported, while the CLI
+  printed "restored." It hits the glob shape every shipped preset uses.
+- **Keep-list globs were not escaped against the expansion.** A `[` anywhere
+  in `$HOME` (e.g. `/Users/me[1]`) turned into a character class and silently
+  voided the whole pattern. The split now comes from the raw template, so the
+  user's wildcards survive and the filesystem's characters are escaped.
+- **A keep entry whose filename contains `[` protected nothing** — it was
+  read only as a glob. The literal spelling is kept as well.
+- **Filesystem paths were interpolated into Rich markup**, so a filename
+  could change what the user *read* before approving a wipe, and unbalanced
+  markup crashed the commit path after the destruction. All paths are escaped.
+- **The snapshot walker swallowed read errors** while the wipe walker
+  reported them: a restore point could quietly omit an unreadable subtree it
+  would then be unable to restore. Taking a snapshot now fails closed.
+
 ### Fixed — "never touched" now covers restore's write half
 - **Restore overwrote keep-list files.** The keep-list stopped restore
   *removing* a protected file but not *rewriting* it, so rolling back
