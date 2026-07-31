@@ -227,6 +227,9 @@ class Config:
     remote: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     #: ids of the harness presets in play (drives the liveness guard).
     presets: tuple[str, ...] = ()
+    #: what the enabled presets cannot clean -- printed on every wipe so a
+    #: "verified" result is never read as more than it means.
+    caveats: tuple[str, ...] = ()
     #: (as written, where it actually resolves) for targets that are symlinks
     #: -- surfaced in every plan so a redirected wipe is never a surprise.
     symlinked_targets: tuple[tuple[str, str], ...] = ()
@@ -311,6 +314,7 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
     #: (preset, template path, where it actually resolves) for preset targets
     #: that point outside their own harness root -- skipped, never wiped.
     escaped_targets: list[tuple[str, str, str]] = []
+    preset_caveats: list[str] = []
     if enabled:
         from . import presets as presets_mod
 
@@ -352,6 +356,7 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                     # harness -- a real git repo was destroyed this way during
                     # pre-release testing.
                     escaped_targets.append((pid, str(path), str(resolved)))
+            preset_caveats.extend(preset.caveats)
             kp, kpat = _split_keep(f"presets.{pid}", list(preset.keep))
             preset_keep_paths.extend(kp)
             preset_keep_patterns.extend(kpat)
@@ -469,6 +474,7 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         remote=remote,
         symlinked_targets=tuple(symlinked_targets),
         escaped_targets=tuple(escaped_targets),
+        caveats=tuple(dict.fromkeys(preset_caveats)),
         presets=tuple(enabled),
         snapshot_dir=snapshot_dir,
         retention=retention,

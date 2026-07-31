@@ -118,6 +118,7 @@ def list_state(
             str(st.kept_count) if shown else "--",
         )
     console.print(table)
+    _print_caveats(cfg)
     if cfg.remote:
         console.print(
             "[dim]remote: '?' means not counted -- list-state makes no network "
@@ -273,6 +274,7 @@ def wipe(
         plans = core.plan_wipe(cfg, scopes)
         console.print(f"[yellow]DRY-RUN[/yellow] would wipe: [bold]{label}[/bold]")
         _print_plans(plans, scopes)
+        _print_caveats(cfg)
         console.print("[dim]nothing changed. re-run with --commit to act.[/dim]")
         return
 
@@ -312,7 +314,8 @@ def wipe(
         raise typer.Exit(code=1)
     if incomplete:
         raise typer.Exit(code=1)
-    console.print("[green]verified[/green] -- state matches the plan.")
+    _print_caveats(cfg)
+    console.print("[green]verified[/green] -- everything the configured wipers cover is gone.")
 
 
 def _liveness_ok(
@@ -350,6 +353,16 @@ def _liveness_ok(
         "rather than reset it. Close the harness, or re-run with --force."
     )
     return False
+
+
+def _print_caveats(cfg: Config) -> None:
+    """State an enabled preset knowingly cannot clean.
+
+    Printed on every wipe, not just `detect`: someone who enabled a preset
+    days ago must not read "verified" and conclude their chats are gone.
+    """
+    for caveat in cfg.caveats:
+        console.print(f"[yellow]caveat:[/yellow] {escape(caveat)}")
 
 
 def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
