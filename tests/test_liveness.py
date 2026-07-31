@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -103,3 +105,58 @@ def test_dry_run_is_never_blocked_by_the_guard(live_config: dict[str, Any]) -> N
     result = runner.invoke(app, ["--config", str(live_config["config"]), "wipe", "session"])
     assert result.exit_code == 0
     assert "DRY-RUN" in result.stdout
+
+
+# -- pid-file detection (the strong signal) ---------------------------------
+
+
+def test_live_pid_file_is_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Claude Code names its session files after the pid; a live one counts."""
+    sessions = tmp_path / ".claude" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / f"{os.getppid()}.json").write_text("{}")
+    monkeypatch.setattr(liveness, "PID_SOURCES", {"claude-code": (str(sessions / "*.json"),)})
+    result = liveness.check("claude-code", ())
+    assert result.likely_running
+    assert any("live process" in r for r in result.reasons)
+
+
+def test_stale_pid_file_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crashed run leaves its file behind -- that must not block forever."""
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "999999.json").write_text("{}")  # no such process
+    monkeypatch.setattr(liveness, "PID_SOURCES", {"claude-code": (str(sessions / "*.json"),)})
+    assert not liveness.check("claude-code", ()).likely_running
+
+
+def test_pid_read_from_json_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ide/<port>.lock form carries the pid in the body, not the name."""
+    locks = tmp_path / "ide"
+    locks.mkdir()
+    (locks / "56736.lock").write_text(json.dumps({"pid": os.getppid()}))
+    monkeypatch.setattr(liveness, "PID_SOURCES", {"claude-code": (str(locks / "*.lock"),)})
+    assert liveness.check("claude-code", ()).likely_running
+
+
+def test_unset_env_template_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    # an unexpanded $VAR must not be globbed as a literal path
+    assert liveness._pids_from(("$GROK_HOME/leader.lock",)) == []
+
+
+def test_pid_harness_does_not_fall_back_to_fuzzy_matching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A harness with a pid contract must not be flagged by name-grepping."""
+    called = False
+
+    def _spy(_frags: tuple[str, ...]) -> list[str]:
+        nonlocal called
+        called = True
+        return ["claude"]
+
+    monkeypatch.setattr(liveness, "_running_process_hits", _spy)
+    monkeypatch.setattr(liveness, "PID_SOURCES", {"claude-code": ()})
+    assert not liveness.check("claude-code", ()).likely_running
+    assert not called, "pid-backed harness must not use command-line matching"

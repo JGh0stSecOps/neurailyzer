@@ -120,6 +120,8 @@ CLAUDE_CODE = Preset(
         "~/.claude/CLAUDE.md",
         "~/.claude/settings.json",
         "~/.claude/settings.local.json",
+        "~/.claude/remote-settings.json",  # cached managed policy
+        "~/.claude/policy-limits.json",
         "~/.claude/keybindings.json",
         "~/.claude/plugins",
         "~/.claude/hooks",
@@ -129,48 +131,107 @@ CLAUDE_CODE = Preset(
         "~/.claude/tasks",
         "~/.claude/scheduled_tasks.lock",
         "~/.claude/.credentials.json",
+        "~/.claude.json",  # account/org identity + project trust (outside the tree)
     ),
-    notes="Layout verified against a live 2026-07 install (macOS). "
-    "projects/<slug>/*.jsonl are transcripts; projects/<slug>/memory/ is "
-    "durable auto-memory and must survive every wipe.",
+    notes="Layout verified against a live 2026-07 install (macOS) and the "
+    "upstream claude-directory doc. projects/<slug>/*.jsonl are transcripts; "
+    "projects/<slug>/memory/ is durable auto-memory and must survive every "
+    "wipe. Storage is append-only JSONL -- no SQLite, so no WAL hazard; "
+    "liveness comes from sessions/<pid>.json. file-history/ backs "
+    "checkpoint-rewind for PAST sessions, so it sits in `sandbox`: wiped "
+    "only when you ask for that scope, and restorable from the snapshot.",
 )
 
 
-#: HELD OUT of REGISTRY: the layout came from a research pass whose citations
-#: could not be traced to primary sources. A guessed path in a wiper is a
-#: destructive bug, so this ships only once each path is source-verified.
 GROK_BUILD = Preset(
-    verified=False,
     id="grok-build",
     name="Grok Build",
     vendor="xAI",
     detect=("$GROK_HOME", "~/.grok"),
     session=(
-        # per-cwd session trees: updates.jsonl, chat_history.jsonl, plans,
-        # rewind points, compaction checkpoints, subagent + MCP spill dirs
+        # sessions/<encoded-cwd>/<session-id>/ holds updates.jsonl,
+        # chat_history.jsonl, summary.json, plan.json, rewind_points.jsonl.
+        # Target the tree wholesale: the <encoded-cwd> segment is url-encoded
+        # ONLY while it fits 255 bytes, and falls back to {slug}-{blake3} --
+        # so any wiper that pattern-matches that name misses long-path
+        # sessions (CJK, OneDrive, iCloud paths hit this).
         "$GROK_HOME/sessions",
         "~/.grok/sessions",
     ),
     sandbox=(
         "$GROK_HOME/logs",
         "~/.grok/logs",
+        "$GROK_HOME/memtrace",
+        "~/.grok/memtrace",
+        "$GROK_HOME/debug",
+        "~/.grok/debug",
+        "$GROK_HOME/marketplace-cache",
+        "~/.grok/marketplace-cache",
     ),
     keep=(
+        # AGENT WORKTREES: may hold uncommitted work. Never touched -- same
+        # rule as Scion. Use `grok`'s own worktree commands to reclaim these.
+        "~/.grok/worktrees",
+        "~/.grok/worktrees.db*",
+        "~/.grok/worktree_pool",
+        "$GROK_HOME/worktrees",
+        "$GROK_HOME/worktrees.db*",
+        "$GROK_HOME/worktree_pool",
+        # pending server uploads -- dropping them loses queued data silently
+        "~/.grok/upload_queue",
+        "$GROK_HOME/upload_queue",
+        # user-authored extension points
+        "~/.grok/personas",
+        "~/.grok/rules",
+        "~/.grok/workflows",
+        "~/.grok/hooks",
+        "~/.grok/installed-plugins",
+        "~/.grok/vendor",
+        "~/.grok/pager.toml",
+        "~/.grok/sandbox.toml",
+        "~/.grok/lsp.json",
+        "$GROK_HOME/personas",
+        "$GROK_HOME/rules",
+        "$GROK_HOME/workflows",
+        "$GROK_HOME/hooks",
+        "$GROK_HOME/installed-plugins",
+        "$GROK_HOME/vendor",
+        # credentials + their advisory flocks
         "~/.grok/auth.json",
+        "~/.grok/auth.json.lock",
         "~/.grok/mcp_credentials.json",
+        "~/.grok/mcp_credentials.json.lock",
+        # THE INSTALLATION ITSELF: bin/grok is a symlink into downloads/,
+        # which holds the real binary payloads. Wiping either uninstalls Grok.
+        "~/.grok/bin",
+        "~/.grok/downloads",
+        "~/.grok/version.json",  # auto-updater state
+        # config + runtime coordination
         "~/.grok/config.toml",
-        "~/.grok/memory",  # user-curated cross-session knowledge (MEMORY.md + index)
+        "~/.grok/leader.sock",
+        "~/.grok/leader*.lock",
+        # user-curated knowledge, same stance as every other preset
+        "~/.grok/memory",
         "~/.grok/skills",
         "$GROK_HOME/auth.json",
+        "$GROK_HOME/auth.json.lock",
         "$GROK_HOME/mcp_credentials.json",
+        "$GROK_HOME/mcp_credentials.json.lock",
+        "$GROK_HOME/bin",
+        "$GROK_HOME/downloads",
+        "$GROK_HOME/version.json",
         "$GROK_HOME/config.toml",
+        "$GROK_HOME/leader.sock",
+        "$GROK_HOME/leader*.lock",
         "$GROK_HOME/memory",
         "$GROK_HOME/skills",
     ),
-    notes="UNVERIFIED -- not in the registry. Paths await source verification "
-    "against xai-org/grok-build. Once confirmed: auth.json and "
-    "mcp_credentials.json are OAuth tokens (never wipe), and NeurAIlyzer "
-    "registers with: grok mcp add neurailyzer -- neurailyzer mcp serve",
+    notes="Layout source-verified against xai-org/grok-build @ 2a28b4a "
+    "(paths.rs grok_home/sessions_cwd_dir, auth/storage.rs, "
+    "mcp/credentials.rs). GROK_HOME is the install root as well as the state "
+    "root -- bin/ and downloads/ hold the binary itself and are never "
+    "touched. Liveness is read from leader.lock. Register NeurAIlyzer with: "
+    "grok mcp add neurailyzer -- neurailyzer mcp serve",
 )
 
 CODEX = Preset(
@@ -401,17 +462,79 @@ VENICE_WEB = Preset(
 #: Only source-verified presets are enabled. `verified=False` definitions stay
 #: in the module (as documentation of what still needs confirming) but never
 #: reach a user's wipe plan -- enforced by the assertion below.
+OPENCODE = Preset(
+    id="opencode",
+    name="opencode",
+    vendor="anomalyco (open source)",
+    # XDG layout on every OS, including Windows (~/.local/share/opencode).
+    detect=(
+        "$XDG_DATA_HOME/opencode",
+        "~/.local/share/opencode",
+    ),
+    session=(
+        # The legacy JSON trees are safe to remove wholesale.
+        #
+        # NOTE the deliberate omission: <data>/opencode*.db is BOTH the
+        # session store AND a credential store (its `credential` table holds
+        # connector credentials), so unlinking it to clear chats would also
+        # destroy those credentials. Clearing sessions there needs row-level
+        # deletes, which this release's file wipers cannot do -- so the DB is
+        # protected instead. See notes.
+        "$XDG_DATA_HOME/opencode/storage",
+        "~/.local/share/opencode/storage",
+        "$XDG_DATA_HOME/opencode/project",
+        "~/.local/share/opencode/project",
+    ),
+    sandbox=(
+        "$XDG_CACHE_HOME/opencode",
+        "~/.cache/opencode",
+        "$TMPDIR/opencode",
+        "$XDG_STATE_HOME/opencode/locks",
+        "~/.local/state/opencode/locks",
+    ),
+    keep=(
+        # credentials, and the DB that doubles as one
+        "$XDG_DATA_HOME/opencode/auth.json",
+        "~/.local/share/opencode/auth.json",
+        "$XDG_DATA_HOME/opencode/mcp-auth.json",
+        "~/.local/share/opencode/mcp-auth.json",
+        "$XDG_DATA_HOME/opencode/opencode*.db*",
+        "~/.local/share/opencode/opencode*.db*",
+        # daemon shared secret: wiping it orphans a running server
+        "$XDG_STATE_HOME/opencode/password",
+        "~/.local/state/opencode/password",
+        "$XDG_STATE_HOME/opencode/server.json",
+        "~/.local/state/opencode/server.json",
+        # managed git worktrees: real checkouts, possibly uncommitted
+        "$XDG_DATA_HOME/opencode/worktree",
+        "~/.local/share/opencode/worktree",
+        # user configuration (wiping it silently un-configures every provider)
+        "$XDG_CONFIG_HOME/opencode",
+        "~/.config/opencode",
+        "~/.opencode",
+    ),
+    notes="Layout source-verified against anomalyco/opencode @ da59457 "
+    "(core/src/global.ts XDG roots, database/database.ts, auth/index.ts, "
+    "cli/services/daemon.ts). XDG paths apply on every OS including Windows. "
+    "IMPORTANT: opencode*.db is both the session store and a credential "
+    "store, so this preset PROTECTS it and wipes only the legacy JSON trees "
+    "plus caches -- clearing chats from the DB needs row-level deletes (a "
+    "future sqlite wiper), and file-level deletion would take credentials "
+    "with it. Liveness is read from <state>/server.json. Shared sessions "
+    "pushed to opncd.ai are server-side and unaffected by any local wipe.",
+)
+
+
 REGISTRY: dict[str, Preset] = {
     p.id: p
     for p in (
         CLAUDE_CODE,
         CODEX,
+        GROK_BUILD,
         HERMES,
         SCION,
+        OPENCODE,
         VENICE_WEB,
-        # GROK_BUILD / OPENCODE are held out of the registry until their
-        # layouts are source-verified -- a guessed path in a wiper is a
-        # destructive bug, so unverified beats plausible.
     )
 }
 
