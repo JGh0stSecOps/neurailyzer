@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import FILE_SCOPES, PENDING_SCOPES, Config
+from .config import FILE_SCOPES, PENDING_SCOPES, REMOTE_SCOPE, Config
 from .snapshots import Snapshot, SnapshotStore
 from .wipers.base import WipePlan, Wiper
 from .wipers.local import PathWiper
+from .wipers.remote import PROVIDERS, RemoteWiper
 
 
 class WipeRefused(RuntimeError):
@@ -43,7 +44,7 @@ class WipeReport:
 def expand_scopes(scopes: list[str]) -> list[str]:
     """``all`` means every scope that could have an adapter."""
     if "all" in scopes:
-        return list(FILE_SCOPES) + list(PENDING_SCOPES)
+        return [*FILE_SCOPES, REMOTE_SCOPE, *PENDING_SCOPES]
     return list(dict.fromkeys(scopes))  # dedupe, keep order
 
 
@@ -54,10 +55,19 @@ def build_wipers(config: Config, scopes: list[str]) -> list[Wiper]:
         roots = config.roots_for(scope)
         if scope in FILE_SCOPES and roots:
             wipers.append(PathWiper(scope, roots, config.keep))
+        elif scope == REMOTE_SCOPE:
+            for provider_id, surfaces in config.remote.items():
+                wipers.append(RemoteWiper(PROVIDERS[provider_id], surfaces))
     return wipers
 
 
 def scope_status(config: Config, scope: str) -> ScopeStatus:
+    if scope == REMOTE_SCOPE:
+        # no network from list-state: show configured providers, not live counts
+        providers = tuple(
+            f"{pid}: {', '.join(surfaces)}" for pid, surfaces in config.remote.items()
+        )
+        return ScopeStatus(scope, bool(providers), True, providers, 0, 0, 0)
     roots = config.roots_for(scope)
     available = scope in FILE_SCOPES
     if not (available and roots):
@@ -98,10 +108,27 @@ def execute_wipe(
     snapshot: Snapshot | None = None
     if take_snapshot:
         store = SnapshotStore(config.snapshot_dir)
-        affected = {w.scope: tuple(config.roots_for(w.scope)) for w in wipers}
-        snapshot = store.take(affected, label)
+        affected = {
+            w.scope: tuple(config.roots_for(w.scope)) for w in wipers if w.scope != REMOTE_SCOPE
+        }
+        # Remote deletes can't be restored, so the restore point records a
+        # MANIFEST of the ids that existed (DESIGN 7) -- the only honest
+        # "before" a provider API allows.
+        manifests = {f"{w.provider.id}": w.plan() for w in wipers if isinstance(w, RemoteWiper)}
+        snapshot = store.take(
+            affected,
+            label,
+            remote_manifest={
+                pid: {"description": p.description, "notes": list(p.notes)}
+                for pid, p in manifests.items()
+            }
+            or None,
+        )
         store.prune(config.retention)
 
     plans = tuple(w.commit() for w in wipers)
-    verified = {w.scope: w.verify() for w in wipers}
+    verified: dict[str, bool] = {}
+    for w in wipers:
+        key = f"{w.scope}:{w.provider.id}" if isinstance(w, RemoteWiper) else w.scope
+        verified[key] = w.verify()
     return WipeReport(snapshot=snapshot, plans=plans, verified=verified)

@@ -16,6 +16,8 @@ every command stays a safe no-op until the user opts state in.
 
 from __future__ import annotations
 
+import fnmatch
+import glob as globmod
 import os
 import tomllib
 from collections.abc import Mapping
@@ -24,8 +26,10 @@ from pathlib import Path
 
 #: scopes that have a working adapter in this release (file-tree state).
 FILE_SCOPES: tuple[str, ...] = ("session", "sandbox")
+#: provider-side stored state, configured via [remote.<provider>].
+REMOTE_SCOPE = "remote"
 #: scopes reserved by the design but without a shipped adapter yet.
-PENDING_SCOPES: tuple[str, ...] = ("rag", "models", "remote")
+PENDING_SCOPES: tuple[str, ...] = ("rag", "models")
 
 DEFAULT_CONFIG_PATH = Path("~/.neurailyzer/config.toml")
 DEFAULT_SNAPSHOT_DIR = Path("~/.neurailyzer/snapshots")
@@ -55,17 +59,31 @@ def _forbidden_target_reason(path: Path) -> str | None:
     return None
 
 
+def _pattern_hits(path: Path, pattern: str) -> bool:
+    """True if *path* or any ancestor matches the (absolute) glob *pattern*."""
+    for candidate in (path, *path.parents):
+        if fnmatch.fnmatchcase(candidate.as_posix(), pattern):
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class KeepList:
     """State that is NEVER wiped, no matter the scope."""
 
     paths: tuple[Path, ...] = ()
+    #: absolute glob patterns (POSIX separators), e.g. ``~/.claude/projects/*/memory``
+    #: after expansion. Patterns protect matches created at ANY time, not just
+    #: ones that existed when the config was loaded.
+    patterns: tuple[str, ...] = ()
     collections: tuple[str, ...] = ()
     memory_keys: tuple[str, ...] = ()
 
     def protects(self, path: Path) -> bool:
-        """True if *path* is a keep-list entry or lives under one."""
-        return any(path == p or p in path.parents for p in self.paths)
+        """True if *path* is a keep-list entry, lives under one, or matches a pattern."""
+        if any(path == p or p in path.parents for p in self.paths):
+            return True
+        return any(_pattern_hits(path, pat) for pat in self.patterns)
 
     def shelters(self, path: Path) -> bool:
         """True if *path* contains a keep-list entry (so it can't be removed)."""
@@ -79,6 +97,10 @@ class Config:
     keep: KeepList = field(default_factory=KeepList)
     #: scope -> absolute target roots. Only FILE_SCOPES appear here in v0.1.
     targets: Mapping[str, tuple[Path, ...]] = field(default_factory=dict)
+    #: provider id -> enabled remote surfaces (see wipers/remote.py).
+    remote: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: ids of the harness presets in play (drives the liveness guard).
+    presets: tuple[str, ...] = ()
     snapshot_dir: Path = field(default_factory=lambda: DEFAULT_SNAPSHOT_DIR.expanduser().resolve())
     retention: int = DEFAULT_RETENTION
     #: where this config was loaded from (None = defaults, no file found).
@@ -94,11 +116,35 @@ def _parse_paths(section: str, value: object) -> tuple[Path, ...]:
     return tuple(_expand(v) for v in value)
 
 
+def _is_glob(raw: str) -> bool:
+    return any(c in raw for c in "*?[")
+
+
+def _split_keep(section: str, value: object) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    """Keep entries may be literal paths or glob patterns; sort them apart.
+
+    Patterns are kept as expanded POSIX strings AND glob-resolved to real
+    paths (existing matches also participate in shelter checks).
+    """
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ConfigError(f"[{section}] paths must be a list of strings")
+    paths: list[Path] = []
+    patterns: list[str] = []
+    for raw in value:
+        expanded = Path(os.path.expandvars(raw)).expanduser()
+        if _is_glob(raw):
+            patterns.append(expanded.as_posix())
+            paths.extend(Path(m).resolve() for m in globmod.glob(str(expanded), recursive=True))
+        else:
+            paths.append(expanded.resolve())
+    return tuple(paths), tuple(patterns)
+
+
 def _parse(data: Mapping[str, object], source: Path) -> Config:
     keep_raw = data.get("keep", {})
     if not isinstance(keep_raw, Mapping):
         raise ConfigError("[keep] must be a table")
-    keep_paths = _parse_paths("keep", keep_raw.get("paths", []))
+    keep_paths, keep_patterns = _split_keep("keep", keep_raw.get("paths", []))
 
     snap_raw = data.get("snapshots", {})
     if not isinstance(snap_raw, Mapping):
@@ -111,11 +157,77 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
     if not isinstance(retention, int) or isinstance(retention, bool) or retention < 1:
         raise ConfigError("[snapshots] retention must be a positive integer")
 
+    # -- presets: known-harness targets + keeps, defined in presets.py --------
+    presets_raw = data.get("presets", {})
+    if not isinstance(presets_raw, Mapping):
+        raise ConfigError("[presets] must be a table")
+    enabled = presets_raw.get("enabled", [])
+    if not isinstance(enabled, list) or not all(isinstance(e, str) for e in enabled):
+        raise ConfigError("[presets] enabled must be a list of strings")
+    preset_targets: dict[str, list[Path]] = {"session": [], "sandbox": []}
+    preset_keep_paths: list[Path] = []
+    preset_keep_patterns: list[str] = []
+    if enabled:
+        from . import presets as presets_mod
+
+        for pid in enabled:
+            preset = presets_mod.REGISTRY.get(pid)
+            if preset is None:
+                raise ConfigError(
+                    f"[presets] unknown preset {pid!r} "
+                    f"(known: {', '.join(sorted(presets_mod.REGISTRY))})"
+                )
+            preset_targets["session"].extend(presets_mod.expand_existing(preset.session))
+            preset_targets["sandbox"].extend(presets_mod.expand_existing(preset.sandbox))
+            kp, kpat = _split_keep(f"presets.{pid}", list(preset.keep))
+            preset_keep_paths.extend(kp)
+            preset_keep_patterns.extend(kpat)
+
+    # -- remote providers -----------------------------------------------------
+    remote_raw = data.get("remote", {})
+    if not isinstance(remote_raw, Mapping):
+        raise ConfigError("[remote] must be a table of provider tables")
+    remote: dict[str, tuple[str, ...]] = {}
+    if remote_raw:
+        from .wipers.remote import PROVIDERS
+
+        for provider_id, body in remote_raw.items():
+            provider = PROVIDERS.get(provider_id)
+            if provider is None:
+                raise ConfigError(
+                    f"[remote.{provider_id}] is not a known provider "
+                    f"(known: {', '.join(sorted(PROVIDERS))})"
+                )
+            if not isinstance(body, Mapping):
+                raise ConfigError(f"[remote.{provider_id}] must be a table")
+            surfaces = body.get("surfaces", [])
+            if not isinstance(surfaces, list) or not all(isinstance(s, str) for s in surfaces):
+                raise ConfigError(f"[remote.{provider_id}] surfaces must be a list")
+            for s in surfaces:
+                if s not in provider.surfaces:
+                    known = ", ".join(sorted(provider.surfaces)) or (
+                        "none -- this provider stores no wipeable server-side state"
+                    )
+                    raise ConfigError(
+                        f"[remote.{provider_id}] unknown surface {s!r} (known: {known})"
+                    )
+            if not surfaces:
+                raise ConfigError(
+                    f"[remote.{provider_id}] lists no surfaces -- each wipeable "
+                    "surface is an explicit opt-in"
+                )
+            remote[provider_id] = tuple(surfaces)
+
     targets_raw = data.get("targets", {})
     if not isinstance(targets_raw, Mapping):
         raise ConfigError("[targets] must be a table")
     targets: dict[str, tuple[Path, ...]] = {}
     for scope, body in targets_raw.items():
+        if scope == REMOTE_SCOPE:
+            raise ConfigError(
+                "[targets.remote] is not a path scope -- configure providers "
+                "via [remote.<provider>] instead"
+            )
         if scope in PENDING_SCOPES:
             raise ConfigError(
                 f"[targets.{scope}] has no adapter in this release -- "
@@ -140,11 +252,35 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                 )
         targets[scope] = paths
 
+    # merge preset targets after explicit ones, with the same guards
+    for scope, extra in preset_targets.items():
+        if not extra:
+            continue
+        merged = list(targets.get(scope, ()))
+        for p in extra:
+            rp = p.resolve()
+            reason = _forbidden_target_reason(rp)
+            if reason is not None:
+                raise ConfigError(f"[presets] refusing target {rp}: {reason}")
+            if rp == snapshot_dir or rp in snapshot_dir.parents:
+                raise ConfigError(
+                    f"[presets] {rp} contains the snapshot store {snapshot_dir} -- "
+                    "move the snapshot store outside every wipe target"
+                )
+            if rp not in merged:
+                merged.append(rp)
+        targets[scope] = tuple(merged)
+
     # The snapshot store protects itself: it is always on the keep-list.
-    keep = KeepList(paths=(*keep_paths, snapshot_dir))
+    keep = KeepList(
+        paths=(*keep_paths, *preset_keep_paths, snapshot_dir),
+        patterns=(*keep_patterns, *preset_keep_patterns),
+    )
     return Config(
         keep=keep,
         targets=targets,
+        remote=remote,
+        presets=tuple(enabled),
         snapshot_dir=snapshot_dir,
         retention=retention,
         source=source,

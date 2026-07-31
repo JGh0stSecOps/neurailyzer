@@ -1,0 +1,54 @@
+# NeurAIlyzer as a tool inside a Scion agent.
+#
+# Scion (github.com/GoogleCloudPlatform/scion) provisions agents from a
+# template manifest and validates its `mcp_servers:` map, injecting each
+# server into the agent's container so the harness sees the tools natively --
+# harness-agnostic, so this works whether the agent runs Claude Code, Codex,
+# or anything else Scion brokers.
+#
+# Use it as a whole template, or copy the mcp_servers block into your own.
+#
+#   scion template add ./integrations/scion
+#   scion create hygienic-agent --template neurailyzer-hygiene
+#
+# The agent then has nl_list_state / nl_snapshot / nl_wipe / nl_restore
+# available mid-task -- "reset my scratch and roll back to before that bad
+# tool loop" becomes a tool call instead of a human running a CLI.
+
+name: neurailyzer-hygiene
+description: >
+  Agent template with NeurAIlyzer state hygiene wired in: the agent can
+  inspect, snapshot, wipe, and point-in-time restore its own accumulated
+  state without leaving the session.
+
+mcp_servers:
+  neurailyzer:
+    # stdio transport: Scion launches the server inside the agent container.
+    command: neurailyzer
+    args:
+      - "--config"
+      - "/workspace/.neurailyzer/config.toml"
+      - "mcp"
+      - "serve"
+    env:
+      # Point the snapshot store at a path that OUTLIVES the agent's scratch,
+      # or restore points die with the very state they protect.
+      NEURAILYZER_CONFIG: /workspace/.neurailyzer/config.toml
+
+# Everything below is ordinary Scion template config -- adjust to taste.
+setup:
+  # NeurAIlyzer ships as a Python package; install it into the agent image.
+  - pip install --no-cache-dir "neurailyzer[mcp]"
+  - mkdir -p /workspace/.neurailyzer
+
+prompt: |
+  You have NeurAIlyzer available for state hygiene. Use it deliberately:
+
+  - `nl_list_state` before you assume anything about accumulated state.
+  - `nl_snapshot` before a risky or exploratory stretch of work.
+  - `nl_wipe` with commit=false first -- ALWAYS read the plan before acting.
+    A commit-wipe takes its own snapshot first, so it is reversible.
+  - `nl_restore` to roll back to a point in time when context has gone bad.
+
+  Scope `all` is refused over MCP by design; a factory reset is a human
+  decision made at the CLI.

@@ -53,24 +53,45 @@ Adapters are pluggable — implement the small `Wiper` contract for a store we d
 
 The honest line: you can't wipe a hosted model's training. You *can* wipe every bit of **state you created** around it — and that's what actually drifts.
 
+## Known harnesses, out of the box
+
+NeurAIlyzer ships **presets** for harnesses it knows, so you don't hand-list paths — and, more importantly, so it knows what must *never* be touched:
+
+```bash
+neurailyzer detect --enable   # find what's installed, write the config
+```
+
+| Preset | Harness | The trap it knows about |
+|---|---|---|
+| `claude-code` | Claude Code | durable auto-memory lives **inside** the session tree (`projects/*/memory`) — a naive `rm -rf` destroys it |
+| `codex` | OpenAI Codex CLI | runtime DBs carry schema-version suffixes (`state_5.sqlite`) — globbed, so version bumps don't rot the preset |
+| `hermes` | Hermes Agent (Nous Research) | `HERMES_HOME` mixes state with credentials *and the install*; `.env` holds every provider key, `pairing/` is an authorization allowlist |
+| `scion` | Scion (Google, experimental) | agent worktrees may hold **unmerged work**; `hub.db` holds identity/signing keys — neither is ever touched |
+| `venice-web` | Venice | history is browser-side; targets per-origin IndexedDB only, never Chromium's *shared* localStorage |
+
+Every preset's keep-list is applied automatically, and each skip is reported. See [integrations/](integrations/) to register NeurAIlyzer as a **tool inside** these harnesses over MCP.
+
 ## What's built · what needs building
 
-**Built and tested today (v0.1):**
+**Built and tested today:**
 
 - `wipe` / `snapshot` / `restore` for any **file-tree state** — session transcripts, chat DB files, JSONL history, sandbox scratch, temp dirs — with dry-run defaults, keep-list protection, and point-in-time rollback
 - Content-addressed snapshot store with retention pruning; restores are bit-identical and themselves reversible
+- **Harness presets** + `detect` for the five harnesses above, with glob keep-rules that protect state created *after* you enabled them
+- **Remote provider wipers** (`--scope remote`) for OpenAI, Anthropic, and xAI — per-surface opt-in, tokens from the environment, never logged
+- **Live-harness guard**: a commit-wipe refuses when a targeted harness looks like it's running (process match or SQLite WAL sidecar), because wiping a live WAL store corrupts rather than resets
 - CLI, MCP server (mcp 2.x, stdio + streamable-http), and library — one core, three surfaces
-- CI on Linux/macOS/Windows × Python 3.11–3.13, including an E2E smoke test that drives the real CLI
+- CI on Linux/macOS/Windows × Python 3.11–3.13, including E2E smoke tests that drive the real CLI over a realistic multi-harness home
 
-**Needs building (adapters welcome — see [the taxonomy](docs/WIPE-TAXONOMY.md) and [CONTRIBUTING](CONTRIBUTING.md)):**
+**Needs building (contributions welcome — see [the taxonomy](docs/WIPE-TAXONOMY.md) and [CONTRIBUTING](CONTRIBUTING.md)):**
 
 - `rag` — vector-store wipers (Qdrant, Chroma, pgvector, Weaviate, Pinecone…)
 - `models` — runtime unload/KV-flush (Ollama, llama.cpp/llama-server, vLLM…)
-- `remote` — provider-side stored state, behind per-provider capability flags
+- More harness presets — **OpenCode** and **Grok Build** are researched but held back until every path is source-verified (a guessed path in a wiper is a destructive bug, so `REGISTRY` refuses unverified presets at import)
 - Chat-store adapters that speak SQL schemas directly (Open WebUI, LibreChat…) rather than treating the DB as an opaque file
 - Scheduling/trigger hooks (end-of-task, cron) and snapshot encryption-at-rest
 
-Each of these is one `Wiper` implementation (`plan()` / `commit()` / `verify()`) — the safety rails, snapshots, CLI, and MCP surface come for free.
+A new store is one `Wiper` implementation (`plan()` / `commit()` / `verify()`); a new harness is one `Preset` entry. The safety rails, snapshots, CLI, and MCP surface come for free.
 
 ## Interfaces
 

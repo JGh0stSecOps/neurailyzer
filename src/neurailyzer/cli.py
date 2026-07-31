@@ -9,6 +9,7 @@ itself reversible). ``--scope all --commit`` additionally demands
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 from pathlib import Path
 
@@ -17,7 +18,14 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__, core
-from .config import FILE_SCOPES, ConfigError, load
+from .config import (
+    DEFAULT_CONFIG_PATH,
+    ENV_CONFIG,
+    FILE_SCOPES,
+    REMOTE_SCOPE,
+    ConfigError,
+    load,
+)
 from .config import Config as Config  # noqa: PLC0414 — re-exported for library use
 from .snapshots import RestorePlan, SnapshotError, SnapshotStore
 from .wipers.base import WipePlan
@@ -107,6 +115,76 @@ def list_state(
 
 
 @app.command()
+def detect(
+    enable: bool = typer.Option(
+        False, "--enable", help="Write/merge a [presets] block enabling everything found."
+    ),
+) -> None:
+    """Find known harnesses installed on this machine and what they accumulate."""
+    from . import presets as presets_mod
+
+    found = presets_mod.detect_installed()
+    if not found:
+        console.print(
+            "[dim]no known harnesses found. "
+            f"known presets: {', '.join(sorted(presets_mod.REGISTRY))}[/dim]"
+        )
+        return
+    for det in found:
+        p = det.preset
+        console.print(f"[bold]{p.name}[/bold] ({p.id}) -- {p.vendor}")
+        for scope, templates in (("session", p.session), ("sandbox", p.sandbox)):
+            for path in presets_mod.expand_existing(templates):
+                console.print(f"  {scope}: {path}")
+        for raw in p.keep:
+            console.print(f"  [cyan]keep:[/cyan] {raw}")
+        if p.notes:
+            console.print(f"  [dim]{p.notes}[/dim]")
+    if not enable:
+        console.print(
+            "[dim]run `neurailyzer detect --enable` to enable these presets in config, "
+            "then `neurailyzer list-state` / `wipe`.[/dim]"
+        )
+        return
+
+    ids = sorted(det.preset.id for det in found)
+    cfg_path = (
+        Path(_state["config"])
+        if _state["config"]
+        else Path(os.environ.get(ENV_CONFIG, str(DEFAULT_CONFIG_PATH))).expanduser()
+    )
+    _merge_presets_into_config(cfg_path, ids)
+    console.print(f"[green]enabled[/green] {', '.join(ids)} in {cfg_path}")
+    console.print("[dim]close a harness before wiping its live session store.[/dim]")
+
+
+def _merge_presets_into_config(cfg_path: Path, ids: list[str]) -> None:
+    """Create or minimally edit the TOML file so [presets] enabled covers *ids*."""
+    import re
+
+    if not cfg_path.exists():
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        body = "[presets]\nenabled = [" + ", ".join(f'"{i}"' for i in ids) + "]\n"
+        cfg_path.write_text(body, encoding="utf-8")
+        return
+    text = cfg_path.read_text(encoding="utf-8")
+    existing: list[str] = []
+    m = re.search(r"(?ms)^\[presets\]\s*?$.*?^enabled\s*=\s*\[(?P<items>[^\]]*)\]", text)
+    if m:
+        existing = re.findall(r'"([^"]+)"', m.group("items"))
+        merged = existing + [i for i in ids if i not in existing]
+        new_line = "enabled = [" + ", ".join(f'"{i}"' for i in merged) + "]"
+        start, end = m.span()
+        block = text[start:end]
+        block = re.sub(r"enabled\s*=\s*\[[^\]]*\]", new_line, block)
+        text = text[:start] + block + text[end:]
+    else:
+        text = text.rstrip("\n") + "\n\n[presets]\nenabled = ["
+        text += ", ".join(f'"{i}"' for i in ids) + "]\n"
+    cfg_path.write_text(text, encoding="utf-8")
+
+
+@app.command()
 def snapshot(
     label: str = typer.Option("manual", "--label", "-l", help="Human label for the restore point."),
     list_: bool = typer.Option(False, "--list", help="List existing restore points and exit."),
@@ -156,6 +234,9 @@ def wipe(
     confirm: str = typer.Option(
         "", "--confirm", help="Required for --scope all --commit: type 'all'."
     ),
+    force: bool = typer.Option(
+        False, "--force", help="Wipe even if a targeted harness looks like it is running."
+    ),
 ) -> None:
     """Reset state at the given scope(s). Dry-run unless --commit."""
     cfg = _load_config()
@@ -177,6 +258,9 @@ def wipe(
         )
         raise typer.Exit(code=2)
 
+    if not _liveness_ok(cfg, scopes, force=force):
+        raise typer.Exit(code=3)
+
     report = core.execute_wipe(
         cfg, scopes, take_snapshot=not no_snapshot, label=f"pre-wipe-{label.replace(', ', '-')}"
     )
@@ -196,6 +280,28 @@ def wipe(
     console.print("[green]verified[/green] -- state matches the plan.")
 
 
+def _liveness_ok(cfg: Config, scopes: list[str], *, force: bool) -> bool:
+    """Refuse (best-effort) to wipe a live harness's session store."""
+    from . import liveness
+
+    roots = tuple(r for s in scopes for r in cfg.roots_for(s))
+    live = liveness.check_enabled(list(cfg.presets), roots)
+    if not live:
+        return True
+    for entry in live:
+        err_console.print(f"[yellow]{entry.advice}[/yellow]")
+        for reason in entry.reasons:
+            err_console.print(f"    [dim]{reason}[/dim]")
+    if force:
+        console.print("[red]--force:[/red] wiping anyway.")
+        return True
+    err_console.print(
+        "[red]refusing[/red] -- wiping a live session store can corrupt it "
+        "rather than reset it. Close the harness, or re-run with --force."
+    )
+    return False
+
+
 def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
     covered = set()
     for p in plans:
@@ -211,6 +317,11 @@ def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
             continue
         if s in FILE_SCOPES:
             console.print(f"  - {s}: [yellow]not configured -- skipped[/yellow]")
+        elif s == REMOTE_SCOPE:
+            console.print(
+                f"  - {s}: [yellow]no providers configured -- skipped[/yellow] "
+                "[dim](see [remote.<provider>] in the README)[/dim]"
+            )
         else:
             console.print(f"  - {s}: [dim]no adapter yet -- skipped[/dim]")
 
