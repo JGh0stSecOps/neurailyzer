@@ -218,24 +218,38 @@ def test_keeplist_prefix_is_not_a_string_prefix(tmp_path: Path) -> None:
 
 
 def test_readonly_symlink_is_not_chmodded_through(tmp_path: Path) -> None:
-    """os.chmod follows links: the recovery path must never rewrite the mode
-    of a file outside the wipe target."""
+    """os.chmod FOLLOWS links, so the read-only recovery path must never run
+    on one -- it would rewrite the mode of a file outside the wipe target.
+
+    The parent is made non-writable on purpose: unlink() must actually RAISE
+    PermissionError, or the recovery path is never entered and this test
+    proves nothing.
+    """
     if os.name == "nt":
         pytest.skip("POSIX modes")
     target = tmp_path / "state"
-    target.mkdir()
+    holder = target / "holder"
+    holder.mkdir(parents=True)
     outside = tmp_path / "outside.txt"
     outside.write_text("data")
     outside.chmod(0o644)
     try:
-        (target / "link").symlink_to(outside)
+        (holder / "link").symlink_to(outside)
     except OSError:
         pytest.skip("symlinks unavailable")
+    holder.chmod(0o500)  # readable, NOT writable -> unlink raises
 
     wiper, _roots = _wipe(_config(tmp_path, target, []))
-    wiper.commit()
+    try:
+        result = wiper.commit()
+    finally:
+        holder.chmod(0o700)
+
+    assert (holder / "link").is_symlink(), "the link was removed after all"
     assert outside.stat().st_mode & 0o777 == 0o644, "chmod leaked through the symlink"
     assert outside.read_text() == "data"
+    assert result.complete is False
+    assert any("could not remove" in n for n in result.notes)
 
 
 def test_restore_does_not_clobber_a_keep_list_file(tmp_path: Path) -> None:
