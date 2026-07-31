@@ -33,7 +33,7 @@ Both are **enforced by CI** (`pr-hygiene`), for humans and agents alike:
 | Check | What |
 |---|---|
 | `lint` | ruff (lint + format) + mypy strict |
-| `test (3.11)` / `test (3.12)` | pytest on 3.11 + 3.12, coverage not decreasing |
+| `test (<os>, <py>)` | pytest on ubuntu + macOS + Windows x Python 3.11-3.13, including the end-to-end smoke tests |
 | `secret scan` | gitleaks — no secrets |
 | `injection / slop / hidden-unicode scan` | no prompt-injection, hidden unicode, or slop in the diff |
 | `branch-name` | branch is `<type>/<name>` |
@@ -59,7 +59,7 @@ A finding **blocks** the PR. If it's a genuine false positive (e.g. docs that le
 ## Local setup
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,mcp]"   # [mcp] so the MCP tests run rather than skip
 pre-commit install     # optional: run the gates before every commit
 pytest
 ```
@@ -67,3 +67,46 @@ pytest
 ## Versioning
 
 [SemVer](https://semver.org). The project is in **initial development (`0.x`)** — anything MAY change between minor versions until the API stabilizes. `1.0.0` is the first stable/GA release, cut only when it's ready — not before. Releases are tagged from `main`.
+
+## Adding a harness preset
+
+A preset teaches NeurAIlyzer where one agent tool keeps its state — and, more
+importantly, what it must never touch. Add one in
+[`src/neurailyzer/presets.py`](src/neurailyzer/presets.py):
+
+```python
+MY_HARNESS = Preset(
+    id="my-harness",
+    verified=True,  # REQUIRED: see below
+    name="My Harness",
+    vendor="Someone",
+    detect=("$MY_HOME", "~/.my-harness"),
+    session=("~/.my-harness/sessions",),
+    sandbox=("~/.my-harness/cache",),
+    keep=("~/.my-harness/auth.json", "~/.my-harness/config.toml"),
+    notes="Where these paths came from, and the trap they encode.",
+)
+```
+
+Then add it to `REGISTRY` and write a test that proves the trap, in the style
+of `tests/test_presets.py::test_grok_install_paths_are_protected`.
+
+**`verified` has no default, on purpose.** Setting it to `True` is a claim
+that *every path* was traced to upstream source or a live install — cite
+where in `notes`. `REGISTRY` refuses an unverified preset at import time,
+because a guessed path in a wiper is a destructive bug, not a stale doc.
+
+Two rules learned the hard way:
+
+- **Never target a bare harness root.** These roots routinely mix state with
+  credentials, and sometimes with the installation itself.
+- **A keep-list test only counts if the protected file is genuinely inside a
+  wipe target.** Otherwise it passes with no keep-list at all — assert
+  containment first.
+
+## Adding a remote provider
+
+Providers live in [`src/neurailyzer/wipers/remote.py`](src/neurailyzer/wipers/remote.py).
+A surface ships only when **both** a list and a delete endpoint are verified —
+you cannot honestly wipe what you cannot enumerate. Tests monkeypatch
+`http_json`, so no network or real key is needed; see `tests/test_remote.py`.

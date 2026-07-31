@@ -41,6 +41,11 @@ class Preset:
     vendor: str
     #: existence of ANY of these (expanded) means "installed here"
     detect: tuple[str, ...]
+    #: REQUIRED, and deliberately has no default: every path below must be
+    #: traced to upstream source or a live install before it can wipe. A
+    #: default of True would make the REGISTRY gate vacuous -- a contributor
+    #: who never thought about it would pass.
+    verified: bool
     #: conversation/thread history -- `--scope session`
     session: tuple[str, ...] = ()
     #: scratch, caches, temp, downloads -- `--scope sandbox`
@@ -48,9 +53,6 @@ class Preset:
     #: never wiped; merged into the keep-list whenever this preset is enabled
     keep: tuple[str, ...] = ()
     notes: str = ""
-    #: paths verified against a live install / primary sources; presets with
-    #: unverified layouts stay out of the registry until confirmed.
-    verified: bool = True
 
 
 def _expand(template: str) -> Path:
@@ -94,6 +96,7 @@ def expand_all(templates: tuple[str, ...]) -> tuple[Path, ...]:
 
 CLAUDE_CODE = Preset(
     id="claude-code",
+    verified=True,
     name="Claude Code",
     vendor="Anthropic",
     detect=("~/.claude",),
@@ -145,6 +148,7 @@ CLAUDE_CODE = Preset(
 
 GROK_BUILD = Preset(
     id="grok-build",
+    verified=True,
     name="Grok Build",
     vendor="xAI",
     detect=("$GROK_HOME", "~/.grok"),
@@ -236,6 +240,7 @@ GROK_BUILD = Preset(
 
 CODEX = Preset(
     id="codex",
+    verified=True,
     name="OpenAI Codex CLI",
     vendor="OpenAI",
     detect=("$CODEX_HOME", "~/.codex"),
@@ -281,6 +286,7 @@ CODEX = Preset(
 
 HERMES = Preset(
     id="hermes",
+    verified=True,
     name="Hermes Agent",
     vendor="Nous Research",
     detect=("$HERMES_HOME", "~/.hermes", "$LOCALAPPDATA/hermes"),
@@ -387,6 +393,7 @@ HERMES = Preset(
 
 SCION = Preset(
     id="scion",
+    verified=True,
     name="Scion",
     vendor="Google (GoogleCloudPlatform/scion, experimental)",
     detect=("~/.scion",),
@@ -419,6 +426,7 @@ SCION = Preset(
 
 VENICE_WEB = Preset(
     id="venice-web",
+    verified=True,
     name="Venice (web app)",
     vendor="Venice AI",
     # Venice has no desktop app: its "local state" IS browser origin storage.
@@ -464,6 +472,7 @@ VENICE_WEB = Preset(
 #: reach a user's wipe plan -- enforced by the assertion below.
 OPENCODE = Preset(
     id="opencode",
+    verified=True,
     name="opencode",
     vendor="anomalyco (open source)",
     # XDG layout on every OS, including Windows (~/.local/share/opencode).

@@ -48,7 +48,7 @@ Adapters are pluggable — implement the small `Wiper` contract for a store we d
 | Tool-sandbox scratch, temp/cache | `sandbox` | ✅ **shipped** |
 | RAG / vector memory | `rag` | 🔜 adapter planned |
 | Local runtime state (KV cache, resident models) | `models` | 🔜 adapter planned |
-| Remote provider state (threads/files/assistants/fine-tunes) | `remote` | 🔜 planned, where the API allows |
+| Remote provider state (files, vector stores, batches) | `remote` | ✅ **shipped** — per-provider, per-surface opt-in |
 | Base-model "bias" (the frozen weights) | — | ❌ not state — swap the model, you can't wipe it |
 
 The honest line: you can't wipe a hosted model's training. You *can* wipe every bit of **state you created** around it — and that's what actually drifts.
@@ -71,7 +71,7 @@ neurailyzer detect --enable   # find what's installed, write the config
 | `scion` | Scion (Google, experimental) | agent worktrees may hold **unmerged work**; `hub.db` holds identity/signing keys — neither is ever touched |
 | `venice-web` | Venice | history is browser-side; targets per-origin IndexedDB only, never Chromium's *shared* localStorage |
 
-Every preset's keep-list is applied automatically, and each skip is reported. See [integrations/](integrations/) to register NeurAIlyzer as a **tool inside** these harnesses over MCP.
+Every preset's keep-list is applied automatically, and each skip is reported. A preset ships only when every path is traced to upstream source or a live install — `Preset.verified` has no default, so that claim is always deliberate, and `REGISTRY` refuses an unverified entry at import. See [integrations/](integrations/) to register NeurAIlyzer as a **tool inside** these harnesses over MCP.
 
 ## What's built · what needs building
 
@@ -79,7 +79,7 @@ Every preset's keep-list is applied automatically, and each skip is reported. Se
 
 - `wipe` / `snapshot` / `restore` for any **file-tree state** — session transcripts, chat DB files, JSONL history, sandbox scratch, temp dirs — with dry-run defaults, keep-list protection, and point-in-time rollback
 - Content-addressed snapshot store with retention pruning; restores are bit-identical and themselves reversible
-- **Harness presets** + `detect` for the five harnesses above, with glob keep-rules that protect state created *after* you enabled them
+- **Harness presets** + `detect` for the seven harnesses above, with glob keep-rules that protect state created *after* you enabled them
 - **Remote provider wipers** (`--scope remote`) for OpenAI, Anthropic, and xAI — per-surface opt-in, tokens from the environment, never logged
 - **Live-harness guard**: a commit-wipe refuses when a targeted harness looks like it's running. Where a harness publishes its own pid (Claude Code's `sessions/<pid>.json`, Grok Build's `leader.lock`) that pid is read and checked for liveness — exact, and immune to stale files from a crash; elsewhere it falls back to command-line matching and SQLite WAL sidecars
 - CLI, MCP server (mcp 2.x, stdio + streamable-http), and library — one core, three surfaces
