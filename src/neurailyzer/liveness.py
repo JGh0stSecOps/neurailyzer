@@ -144,15 +144,24 @@ def _glob(pattern: Path) -> list[Path]:
     return [Path(m) for m in globmod.glob(str(pattern))]
 
 
+#: Test hook: with the process scan on, a developer machine has dozens of
+#: processes whose command line contains "claude", so a test that seeds a WAL
+#: sidecar would pass no matter what. Setting this lets a test prove the
+#: sidecar itself is what trips the guard.
+ENV_DISABLE_PROCESS_SCAN = "NEURAILYZER_DISABLE_PROCESS_SCAN"
+
+
 def _running_process_hits(fragments: tuple[str, ...]) -> list[str]:
     """Best-effort process scan. Empty list on any platform we can't ask."""
     hits: list[str] = []
+    if os.environ.get(ENV_DISABLE_PROCESS_SCAN):
+        return hits
     if os.name == "nt":
         exe = shutil.which("tasklist")
         cmd = [exe, "/fo", "csv", "/nh"] if exe else None
     else:
         exe = shutil.which("ps")
-        cmd = [exe, "-eo", "command"] if exe else None
+        cmd = [exe, "-eo", "pid=,command="] if exe else None
     if not cmd:
         return hits
     try:
@@ -161,12 +170,18 @@ def _running_process_hits(fragments: tuple[str, ...]) -> list[str]:
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return hits
-    own_pid = str(os.getpid())
+    # Exclude OURSELVES by pid. Matching on the substring "neurailyzer"
+    # instead would blind the guard to any harness launched from a directory
+    # with that name -- exactly the machine where someone runs this tool.
+    mine = {os.getpid(), os.getppid()}
     for line in out.splitlines():
-        if own_pid in line and "neurailyzer" in line:
-            continue  # never report ourselves
+        head, _, rest = line.strip().partition(" ")
+        pid: int | None = int(head) if head.isdigit() else None
+        command = rest if pid is not None else line
+        if pid in mine:
+            continue
         for frag in fragments:
-            if frag.lower() in line.lower() and "neurailyzer" not in line.lower():
+            if frag.lower() in command.lower():
                 hits.append(frag)
                 break
     return sorted(set(hits))

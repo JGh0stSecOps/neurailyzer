@@ -6,6 +6,50 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — keep-list correctness (the safety promise itself)
+A second adversarial pass found the keep-list could silently fail — the one
+bug class that loses data permanently. Each fix has a test that first proves
+the protected file is genuinely inside a wipe target, so it cannot pass
+vacuously:
+- **A symlinked keep entry was never protected** and not even reported as a
+  skip: entries were stored resolved while the walker sees the link itself,
+  so the two never compared equal. Both spellings are now kept and matched.
+- **Case-insensitive filesystems voided the keep-list.** `Path.resolve()`
+  does not canonicalize case, and `os.path.normcase` is a *no-op on macOS* —
+  so `~/projects` failed to protect on-disk `~/Projects`. Comparison now
+  case-folds on macOS and Windows.
+- **Keep patterns were stored unresolved while targets were resolved**, so a
+  dotfiles-managed `~/.claude -> ~/dotfiles/claude` (stow, chezmoi) meant
+  auto-memory patterns could never match. Pattern prefixes resolve now.
+- **Unicode NFC/NFD divergence** on macOS defeated matching.
+- **A symlinked target could redirect a wipe into an unrelated tree**
+  (`~/.claude/downloads -> ~/Downloads`). Targets resolving inside Downloads,
+  Documents, Desktop, Pictures, Music, Movies, or Public are refused, and
+  every symlinked target is reported in the plan before anything is wiped.
+- **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
+  file outside the target tree. It now refuses rather than following.
+
+### Fixed — the guard, on every surface
+- **MCP had no liveness guard at all** — and it is the surface where an agent
+  wipes mid-session, i.e. the guaranteed-live case. `nl_wipe` now runs the
+  same check and takes `force`.
+- **`restore --commit` had no guard either**, though it rewrites and deletes
+  files; it now takes `--force` too.
+- **Self-exclusion matched the substring "neurailyzer" in any command line**,
+  so a harness launched from a directory with that name was invisible to the
+  guard. Exclusion is by pid now.
+
+### Fixed — tests that passed for the wrong reason
+- Nine of ten "credentials and memory survive" assertions in the flagship E2E
+  sat **outside every wipe target**, so they would pass with no keep-list at
+  all. The suite now proves containment first, and a new
+  `test_keeplist_contract.py` covers symlinks, case, unicode, and
+  created-after-load paths where they actually bite.
+- Both WAL-guard tests were satisfied by the ~36 real processes matching
+  "claude" on any developer machine rather than by the sidecar they seed. The
+  process scan is now stubbed so the sidecar is the only possible trigger,
+  and they assert the reason and preset, not just the exit code.
+
 ### Fixed — remote wiper hardening
 An adversarial review pass over the remote wipers found eleven defects; all
 are fixed with a regression test each:

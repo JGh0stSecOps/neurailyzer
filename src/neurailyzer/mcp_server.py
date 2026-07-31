@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import __version__, core
+from . import __version__, core, liveness
 from .config import FILE_SCOPES, PENDING_SCOPES, REMOTE_SCOPE, load
 from .snapshots import SnapshotError, SnapshotStore
 
@@ -86,7 +86,7 @@ def build_server(config_path: str | None = None) -> Any:
             "the CLI -- ask over MCP with commit=false to see their plan."
         )
     )
-    def nl_wipe(scopes: list[str], commit: bool = False) -> dict[str, Any]:
+    def nl_wipe(scopes: list[str], commit: bool = False, force: bool = False) -> dict[str, Any]:
         if "all" in scopes:
             return {
                 "ok": False,
@@ -111,6 +111,22 @@ def build_server(config_path: str | None = None) -> Any:
                 "ok": True,
                 "dry_run": True,
                 "plans": [_plan_dict(p) for p in plans],
+            }
+        # An agent calling this mid-session is the case the liveness guard
+        # exists for: the harness holding the store open is the very one
+        # making the call.
+        live = liveness.check_enabled(
+            list(cfg.presets), tuple(r for s in scopes for r in cfg.roots_for(s))
+        )
+        if live and not force:
+            return {
+                "ok": False,
+                "reason": "a targeted harness looks like it is RUNNING -- wiping a "
+                "live session store can corrupt it rather than reset it. Close it, "
+                "or call again with force=true if you are certain.",
+                "liveness": [
+                    {"preset": entry.preset_id, "reasons": list(entry.reasons)} for entry in live
+                ],
             }
         report = core.execute_wipe(cfg, scopes, take_snapshot=True, label="mcp-wipe")
         return {

@@ -249,6 +249,11 @@ def wipe(
     scopes = core.expand_scopes([s.value for s in scope])
     label = ", ".join(s.value for s in scope)
 
+    for written, actual in cfg.symlinked_targets:
+        console.print(
+            f"[yellow]note:[/yellow] {written} is a symlink -- the wipe lands on "
+            f"[bold]{actual}[/bold]"
+        )
     if not commit:
         plans = core.plan_wipe(cfg, scopes)
         console.print(f"[yellow]DRY-RUN[/yellow] would wipe: [bold]{label}[/bold]")
@@ -286,11 +291,17 @@ def wipe(
     console.print("[green]verified[/green] -- state matches the plan.")
 
 
-def _liveness_ok(cfg: Config, scopes: list[str], *, force: bool) -> bool:
-    """Refuse (best-effort) to wipe a live harness's session store."""
+def _liveness_ok(
+    cfg: Config,
+    scopes: list[str],
+    *,
+    force: bool,
+    extra_roots: tuple[Path, ...] = (),
+) -> bool:
+    """Refuse (best-effort) to touch a live harness's session store."""
     from . import liveness
 
-    roots = tuple(r for s in scopes for r in cfg.roots_for(s))
+    roots = tuple(r for s in scopes for r in cfg.roots_for(s)) + extra_roots
     live = liveness.check_enabled(list(cfg.presets), roots)
     if not live:
         return True
@@ -336,6 +347,9 @@ def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
 def restore(
     to: str = typer.Option(..., "--to", help="Point in time (ISO-8601) or snapshot id."),
     commit: bool = typer.Option(False, "--commit", help="Actually restore. Dry-run without it."),
+    force: bool = typer.Option(
+        False, "--force", help="Restore even if a targeted harness looks like it is running."
+    ),
 ) -> None:
     """Roll state back to a point in time (nearest snapshot at/before it)."""
     cfg = _load_config()

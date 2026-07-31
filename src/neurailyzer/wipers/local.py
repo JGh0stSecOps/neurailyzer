@@ -50,9 +50,17 @@ def _walk(root: Path) -> tuple[list[Path], list[Path]]:
 
 
 def _force_unlink(path: Path) -> None:
+    """Unlink, clearing a read-only attribute if that is what blocks us.
+
+    The chmod recovery NEVER runs on a symlink: os.chmod follows links, so it
+    would rewrite the mode of the destination -- a file outside the wipe
+    target that we were never authorized to touch.
+    """
     try:
         path.unlink()
     except PermissionError:
+        if path.is_symlink():
+            raise
         os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
         path.unlink()
 

@@ -96,3 +96,29 @@ def test_nl_wipe_refuses_remote_hidden_inside_all(state: dict[str, Path]) -> Non
     server = build_server(str(state["config"]))
     out = _call(server, "nl_wipe", {"scopes": ["all"], "commit": True})
     assert out["ok"] is False
+
+
+def test_nl_wipe_honors_the_liveness_guard(state: dict[str, Path]) -> None:
+    """MCP is the surface where an agent wipes MID-SESSION -- the harness
+    holding the store open is the one making the call, so this is the
+    guaranteed-live case, not an edge case."""
+    (state["sandbox"] / "state.db").write_bytes(b"SQLite format 3\x00")
+    (state["sandbox"] / "state.db-wal").write_bytes(b"wal")
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[presets]\nenabled = ["hermes"]\n')
+    server = build_server(str(cfg))
+    out = _call(server, "nl_wipe", {"scopes": ["sandbox"], "commit": True})
+    assert out["ok"] is False
+    assert "RUNNING" in out["reason"]
+    assert out["liveness"]
+    assert (state["sandbox"] / "notes.txt").exists()  # nothing was wiped
+
+
+def test_nl_wipe_force_overrides_the_liveness_guard(state: dict[str, Path]) -> None:
+    (state["sandbox"] / "state.db-wal").write_bytes(b"wal")
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[presets]\nenabled = ["hermes"]\n')
+    server = build_server(str(cfg))
+    out = _call(server, "nl_wipe", {"scopes": ["sandbox"], "commit": True, "force": True})
+    assert out["ok"] is True
+    assert not (state["sandbox"] / "notes.txt").exists()
