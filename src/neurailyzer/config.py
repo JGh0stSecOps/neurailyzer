@@ -128,28 +128,39 @@ def _spellings(path: Path) -> tuple[str, ...]:
     return tuple(keys)
 
 
-def _resolve_pattern(pattern: str) -> tuple[str, ...]:
-    """A glob pattern, plus the same pattern with its literal prefix resolved.
+def _resolve_pattern(raw: str, expanded: Path) -> tuple[str, ...]:
+    """Every spelling of a keep GLOB that should match on this machine.
 
-    Targets are stored resolved, so an unresolved pattern can never match
-    when the harness dir is a symlink (stow/chezmoi put ``~/.claude`` in a
-    dotfiles repo). Only the non-glob prefix is resolvable.
+    The split point comes from the RAW template, not the expanded path: the
+    wildcards are the user's (``~/.claude/projects/*/memory``), while the
+    expansion supplies text from the filesystem that may itself contain glob
+    metacharacters. A home directory like ``/Users/me[1]`` would otherwise
+    turn ``[1]`` into a character class and silently void the whole pattern --
+    the keep-list failing open, which is the one direction it must never fail.
+
+    Targets are stored resolved, so the resolved spelling is included too
+    (stow/chezmoi put ``~/.claude`` in a dotfiles repo).
     """
-    out = {pattern}
-    parts = PurePosixPath(pattern).parts
-    literal = []
-    for part in parts:
-        if any(c in part for c in "*?["):
-            break
-        literal.append(part)
-    if literal and len(literal) < len(parts):
-        prefix = Path(*literal)
-        try:
-            resolved = prefix.resolve()
-        except (OSError, RuntimeError):
-            return tuple(out)
-        rest = parts[len(literal) :]
-        out.add((resolved.joinpath(*rest)).as_posix())
+    raw_parts = PurePosixPath(raw.replace(os.sep, "/")).parts
+    wildcard_at = next(
+        (i for i, part in enumerate(raw_parts) if any(c in part for c in "*?[")),
+        len(raw_parts),
+    )
+    tail = raw_parts[wildcard_at:]
+    if not tail:  # not a glob after all
+        return (expanded.as_posix(),)
+
+    exp_parts = PurePosixPath(expanded.as_posix()).parts
+    if len(exp_parts) < len(tail):
+        return (expanded.as_posix(),)
+    prefix = Path(*exp_parts[: len(exp_parts) - len(tail)])
+
+    out = {expanded.as_posix()}
+    out.add(PurePosixPath(globmod.escape(str(prefix))).joinpath(*tail).as_posix())
+    with contextlib.suppress(OSError, RuntimeError):
+        resolved = prefix.resolve()
+        out.add(PurePosixPath(str(resolved)).joinpath(*tail).as_posix())
+        out.add(PurePosixPath(globmod.escape(str(resolved))).joinpath(*tail).as_posix())
     return tuple(out)
 
 
@@ -251,9 +262,13 @@ def _split_keep(section: str, value: object) -> tuple[tuple[Path, ...], tuple[st
     for raw in value:
         expanded = Path(os.path.expandvars(raw)).expanduser()
         if _is_glob(raw):
-            patterns.extend(_resolve_pattern(expanded.as_posix()))
+            patterns.extend(_resolve_pattern(raw, expanded))
             for match in globmod.glob(str(expanded), recursive=True):
                 paths.append(Path(match))  # both spellings kept by _spellings()
+            # ALSO keep the literal spelling. A filename containing '[' is a
+            # legal path, and reading it only as a glob would silently protect
+            # nothing -- the keep-list failing open, which it must never do.
+            paths.append(expanded)
         else:
             # store the path AS WRITTEN: _spellings() supplies the resolved
             # form too, so a symlinked keep entry still matches the link

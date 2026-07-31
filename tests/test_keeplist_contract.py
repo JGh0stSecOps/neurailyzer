@@ -303,3 +303,63 @@ def test_a_stubborn_file_does_not_abort_the_whole_wipe(tmp_path: Path) -> None:
         assert any("could not remove" in n for n in result.notes)
     finally:
         locked_dir.chmod(0o700)
+
+
+def test_a_path_cannot_forge_the_plan_a_user_reads(tmp_path: Path) -> None:
+    """The plan IS the contract for a destructive tool.
+
+    Filesystem paths were interpolated into Rich markup, so a filename could
+    change what the user READ before approving a wipe -- and a path with
+    unbalanced markup crashed the commit path outright, after the destruction.
+    """
+    from typer.testing import CliRunner
+
+    from neurailyzer.cli import app
+
+    target = tmp_path / "state"
+    target.mkdir()
+    # markup with no path separator, so it is a legal filename. It reaches
+    # the output as a keep-list skip note, which is where a hostile name
+    # would otherwise be able to rewrite what the user reads.
+    hostile = "[bold red]everything is fine[]"
+    kept = target / hostile
+    kept.write_text("hostile name")
+    (target / "ordinary.txt").write_text("data")
+
+    cfg = _config(tmp_path, target, [str(kept)])
+    result = CliRunner().invoke(app, ["--config", str(cfg), "wipe", "session"])
+    assert result.exit_code == 0, result.output
+    # the literal name is shown, not swallowed as a markup tag
+    assert hostile in result.stdout.replace("\n", "")
+
+    committed = CliRunner().invoke(
+        app, ["--config", str(cfg), "wipe", "session", "--commit", "--force"]
+    )
+    assert committed.exit_code == 0, committed.output  # must not crash mid-wipe
+    assert not (target / "ordinary.txt").exists()
+
+
+def test_a_snapshot_refuses_rather_than_silently_omitting(tmp_path: Path) -> None:
+    """A snapshot that quietly skips an unreadable subtree cannot restore it.
+
+    Taking one before a wipe is only meaningful if it is complete, so this
+    fails CLOSED: the wipe is refused rather than proceeding with a restore
+    point that has a hole in it.
+    """
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    from neurailyzer.snapshots import SnapshotError, SnapshotStore
+
+    target = tmp_path / "state"
+    locked = target / "locked"
+    locked.mkdir(parents=True)
+    (locked / "secret.txt").write_text("unreadable")
+    (target / "ok.txt").write_text("fine")
+    locked.chmod(0o000)
+
+    store = SnapshotStore(tmp_path / "snaps")
+    try:
+        with pytest.raises(SnapshotError, match="incomplete restore point"):
+            store.take({"session": (target,)}, "should-refuse")
+    finally:
+        locked.chmod(0o700)
