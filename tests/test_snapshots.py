@@ -291,3 +291,38 @@ def test_directory_modes_survive_a_restore(state: dict[str, Path]) -> None:
     assert private.is_dir()
     assert private.stat().st_mode & 0o777 == 0o700, "restore widened the mode"
     assert (private / "note.txt").read_text() == "secret"
+
+
+def test_restore_handles_a_file_that_became_a_directory(state: dict[str, Path]) -> None:
+    """An audit believed this aborted restore mid-flight. It does not -- the
+    removal pass clears the wrong-typed entry before the write pass runs.
+    Locked in here so it stays that way."""
+    store, targets = _store_and_targets(state)
+    thing = state["sandbox"] / "thing"
+    thing.write_text("i was a file")
+    snap = store.take(targets, "before-the-swap")
+
+    thing.unlink()
+    thing.mkdir()
+    (thing / "inner.txt").write_text("now a directory")
+
+    plan = store.restore(snap, KeepList())
+    assert not plan.errors, plan.errors
+    assert thing.is_file(), "a file recorded as a file came back as something else"
+    assert thing.read_text() == "i was a file"
+
+
+def test_restore_handles_a_directory_that_became_a_file(state: dict[str, Path]) -> None:
+    store, targets = _store_and_targets(state)
+    memory = state["sandbox"] / "memory"
+    memory.mkdir()
+    (memory / "note.md").write_text("ORIGINAL")
+    snap = store.take(targets, "before-the-swap")
+
+    shutil.rmtree(memory)
+    memory.write_text("now a file")
+
+    plan = store.restore(snap, KeepList())
+    assert not plan.errors, plan.errors
+    assert memory.is_dir(), "a directory recorded as a directory did not come back"
+    assert (memory / "note.md").read_text() == "ORIGINAL"

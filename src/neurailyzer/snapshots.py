@@ -502,6 +502,10 @@ def _force_unlink(path: Path) -> None:
     wipers/local.py; it was missing here, and the old docstring claimed a
     safety property the code did not have.)
     """
+    if path.is_dir() and not path.is_symlink():
+        # the caller confused a tree for an entry; failing loudly beats
+        # chmodding a directory and then failing anyway
+        raise IsADirectoryError(f"refusing to unlink directory {path}")
     try:
         path.unlink()
     except PermissionError:
