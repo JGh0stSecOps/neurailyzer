@@ -122,3 +122,16 @@ def test_nl_wipe_force_overrides_the_liveness_guard(state: dict[str, Path]) -> N
     out = _call(server, "nl_wipe", {"scopes": ["sandbox"], "commit": True, "force": True})
     assert out["ok"] is True
     assert not (state["sandbox"] / "notes.txt").exists()
+
+
+def test_nl_list_state_shows_the_remote_scope(state: dict[str, Path]) -> None:
+    """An agent that cannot see the scope can still name it -- and it is the
+    one whose deletes nothing can undo."""
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[remote.openai]\nsurfaces = ["files"]\n')
+    rows = _call(build_server(str(cfg)), "nl_list_state", {})
+    by_scope = {r["scope"]: r for r in rows}
+    assert "remote" in by_scope
+    assert by_scope["remote"]["irreversible"] is True
+    assert by_scope["remote"]["counted"] is False  # no network call was made
+    assert by_scope["session"]["irreversible"] is False

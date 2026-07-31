@@ -46,7 +46,9 @@ def build_server(config_path: str | None = None) -> Any:
     def nl_list_state() -> list[dict[str, Any]]:
         cfg = load(config_path)
         out = []
-        for scope in (*FILE_SCOPES, *PENDING_SCOPES):
+        # REMOTE_SCOPE must appear here: an agent that cannot SEE the
+        # scope can still name it, and it is the irreversible one.
+        for scope in (*FILE_SCOPES, REMOTE_SCOPE, *PENDING_SCOPES):
             st = core.scope_status(cfg, scope)
             out.append(
                 {
@@ -57,6 +59,8 @@ def build_server(config_path: str | None = None) -> Any:
                     "file_count": st.file_count,
                     "total_bytes": st.total_bytes,
                     "keep_list_protected": st.kept_count,
+                    "counted": st.counted,
+                    "irreversible": scope == REMOTE_SCOPE,
                 }
             )
         return out
