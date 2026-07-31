@@ -107,6 +107,11 @@ vacuously:
   same check and takes `force`.
 - **`restore --commit` had no guard either**, though it rewrites and deletes
   files; it now takes `--force` too.
+- **The fallback matcher matched a harness name anywhere in a command line**,
+  so an editor with `hermes-agent/` open, a `git clone` of it, or a `grep`
+  mentioning it looked like the harness itself — and a false positive here
+  blocks a legitimate wipe or restore. It matches the executable now. (Found
+  because it intermittently broke this project's own test suite.)
 - **Self-exclusion matched the substring "neurailyzer" in any command line**,
   so a harness launched from a directory with that name was invisible to the
   guard. Exclusion is by pid now.

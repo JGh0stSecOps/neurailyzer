@@ -103,6 +103,10 @@ def harness_home(tmp_path: Path) -> dict[str, Any]:
         "TERM": "dumb",
         "COLUMNS": "220",
         "NEURAILYZER_CONFIG": str(tmp_path / "config.toml"),
+        # the host's process list must not decide whether a test passes: an
+        # unrelated process merely mentioning a harness would otherwise trip
+        # the liveness guard mid-run
+        "NEURAILYZER_DISABLE_PROCESS_SCAN": "1",
     }
     for var in ("CODEX_HOME", "HERMES_HOME", "GROK_HOME", "LOCALAPPDATA", "APPDATA"):
         env.pop(var, None)

@@ -241,3 +241,42 @@ def test_restore_force_overrides_the_guard(live_config: dict[str, Any]) -> None:
         ["--config", str(cfg), "restore", "--to", "9999-01-01T00:00", "--commit", "--force"],
     )
     assert result.exit_code == 0, result.output
+
+
+def test_a_process_that_merely_mentions_a_harness_is_not_a_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An editor with hermes-agent/ open, or a git clone of it, is not the
+    harness -- and a false positive here blocks a legitimate wipe."""
+    monkeypatch.delenv(liveness.ENV_DISABLE_PROCESS_SCAN, raising=False)
+    sample = "\n".join(
+        [
+            "  501 git clone https://github.com/NousResearch/hermes-agent",
+            "  502 rg codex /Users/me/src/notes",
+            "  503 /usr/bin/vim /Users/me/hermes-agent/README.md",
+        ]
+    )
+    monkeypatch.setattr(
+        liveness.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": sample})(),
+    )
+    monkeypatch.setattr(liveness.shutil, "which", lambda _n: "/bin/ps")
+    assert liveness._running_process_hits(("hermes", "codex")) == []
+
+
+def test_the_real_binary_is_still_matched(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(liveness.ENV_DISABLE_PROCESS_SCAN, raising=False)
+    sample = "\n".join(
+        [
+            "  601 /usr/local/bin/hermes --tui",
+            "  602 /Users/me/.local/bin/codex --cd /Users/me/src",
+        ]
+    )
+    monkeypatch.setattr(
+        liveness.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": sample})(),
+    )
+    monkeypatch.setattr(liveness.shutil, "which", lambda _n: "/bin/ps")
+    assert liveness._running_process_hits(("hermes", "codex")) == ["codex", "hermes"]

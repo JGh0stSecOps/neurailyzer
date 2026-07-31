@@ -26,7 +26,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 #: Harnesses that publish a pid: a glob of files whose name (or JSON body)
 #: identifies a live process. This is the STRONG signal -- a live pid means
@@ -184,11 +184,24 @@ def _running_process_hits(fragments: tuple[str, ...]) -> list[str]:
         command = rest if pid is not None else line
         if pid in mine:
             continue
+        # Match the EXECUTABLE, not the whole command line. Substring-matching
+        # the arguments makes any process that merely mentions a harness --
+        # an editor with hermes-agent/ open, a git clone of it, a grep --
+        # look like the harness itself, and a false positive here blocks a
+        # legitimate wipe or restore.
+        exe = _executable_name(command)
         for frag in fragments:
-            if frag.lower() in command.lower():
+            if exe == frag.lower() or exe.startswith(frag.lower() + "."):
                 hits.append(frag)
                 break
     return sorted(set(hits))
+
+
+def _executable_name(command: str) -> str:
+    """Lowercased basename of the program in a command line, sans extension."""
+    first = command.strip().split(" ", 1)[0]
+    name = PurePath(first.strip('"')).name.lower()
+    return name
 
 
 def _open_wal_sidecars(roots: tuple[Path, ...], limit: int = 10) -> list[str]:
