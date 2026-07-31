@@ -129,3 +129,63 @@ def test_detect_enable_appends_to_existing_config(
     text = cfg.read_text()
     assert "[keep]" in text and "[presets]" in text and "claude-code" in text
     load(cfg)  # still valid TOML that parses into a working config
+
+
+# -- preset invariants: the rules that keep a wiper from being a footgun -----
+
+
+def test_every_registered_preset_is_verified() -> None:
+    from neurailyzer.presets import REGISTRY
+
+    unverified = [p.id for p in REGISTRY.values() if not p.verified]
+    assert not unverified, f"unverified preset(s) shipped: {unverified}"
+
+
+def test_no_preset_targets_a_bare_home_root() -> None:
+    """A preset must name subtrees, never the harness root -- those roots mix
+    state with credentials and, for Grok Build, the binary itself."""
+    from neurailyzer.presets import REGISTRY
+
+    roots = {"~", "~/.claude", "~/.codex", "~/.hermes", "~/.grok", "~/.scion"}
+    for preset in REGISTRY.values():
+        for template in (*preset.session, *preset.sandbox):
+            assert template.rstrip("/") not in roots, (
+                f"{preset.id} targets the bare root {template}"
+            )
+
+
+def test_grok_install_paths_are_protected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """bin/ is a symlink to downloads/<binary>: wiping either uninstalls Grok."""
+    home = tmp_path / "home"
+    grok = home / ".grok"
+    (grok / "sessions" / "enc-cwd" / "sid").mkdir(parents=True)
+    (grok / "sessions" / "enc-cwd" / "sid" / "chat_history.jsonl").write_text("{}\n")
+    (grok / "logs").mkdir()
+    (grok / "logs" / "unified.jsonl").write_text("{}\n")
+    (grok / "downloads").mkdir()
+    (grok / "downloads" / "grok-1.2.3").write_text("#!/bin/sh\n")
+    (grok / "bin").mkdir()
+    (grok / "auth.json").write_text('{"token":"KEEP"}')
+    (grok / "memory").mkdir()
+    (grok / "memory" / "MEMORY.md").write_text("curated\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        '[presets]\nenabled = ["grok-build"]\n'
+        f'\n[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    conf = load(cfg)
+    for scope in ("session", "sandbox"):
+        PathWiper(scope, conf.roots_for(scope), conf.keep).commit()
+
+    assert not (grok / "sessions" / "enc-cwd" / "sid" / "chat_history.jsonl").exists()
+    assert not (grok / "logs" / "unified.jsonl").exists()
+    # the install and the credentials survive
+    assert (grok / "downloads" / "grok-1.2.3").exists()
+    assert (grok / "bin").is_dir()
+    assert (grok / "auth.json").read_text() == '{"token":"KEEP"}'
+    assert (grok / "memory" / "MEMORY.md").exists()

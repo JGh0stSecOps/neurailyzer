@@ -120,6 +120,8 @@ CLAUDE_CODE = Preset(
         "~/.claude/CLAUDE.md",
         "~/.claude/settings.json",
         "~/.claude/settings.local.json",
+        "~/.claude/remote-settings.json",  # cached managed policy
+        "~/.claude/policy-limits.json",
         "~/.claude/keybindings.json",
         "~/.claude/plugins",
         "~/.claude/hooks",
@@ -129,25 +131,30 @@ CLAUDE_CODE = Preset(
         "~/.claude/tasks",
         "~/.claude/scheduled_tasks.lock",
         "~/.claude/.credentials.json",
+        "~/.claude.json",  # account/org identity + project trust (outside the tree)
     ),
-    notes="Layout verified against a live 2026-07 install (macOS). "
-    "projects/<slug>/*.jsonl are transcripts; projects/<slug>/memory/ is "
-    "durable auto-memory and must survive every wipe.",
+    notes="Layout verified against a live 2026-07 install (macOS) and the "
+    "upstream claude-directory doc. projects/<slug>/*.jsonl are transcripts; "
+    "projects/<slug>/memory/ is durable auto-memory and must survive every "
+    "wipe. Storage is append-only JSONL -- no SQLite, so no WAL hazard; "
+    "liveness comes from sessions/<pid>.json. file-history/ backs "
+    "checkpoint-rewind for PAST sessions, so it sits in `sandbox`: wiped "
+    "only when you ask for that scope, and restorable from the snapshot.",
 )
 
 
-#: HELD OUT of REGISTRY: the layout came from a research pass whose citations
-#: could not be traced to primary sources. A guessed path in a wiper is a
-#: destructive bug, so this ships only once each path is source-verified.
 GROK_BUILD = Preset(
-    verified=False,
     id="grok-build",
     name="Grok Build",
     vendor="xAI",
     detect=("$GROK_HOME", "~/.grok"),
     session=(
-        # per-cwd session trees: updates.jsonl, chat_history.jsonl, plans,
-        # rewind points, compaction checkpoints, subagent + MCP spill dirs
+        # sessions/<encoded-cwd>/<session-id>/ holds updates.jsonl,
+        # chat_history.jsonl, summary.json, plan.json, rewind_points.jsonl.
+        # Target the tree wholesale: the <encoded-cwd> segment is url-encoded
+        # ONLY while it fits 255 bytes, and falls back to {slug}-{blake3} --
+        # so any wiper that pattern-matches that name misses long-path
+        # sessions (CJK, OneDrive, iCloud paths hit this).
         "$GROK_HOME/sessions",
         "~/.grok/sessions",
     ),
@@ -156,21 +163,42 @@ GROK_BUILD = Preset(
         "~/.grok/logs",
     ),
     keep=(
+        # credentials + their advisory flocks
         "~/.grok/auth.json",
+        "~/.grok/auth.json.lock",
         "~/.grok/mcp_credentials.json",
+        "~/.grok/mcp_credentials.json.lock",
+        # THE INSTALLATION ITSELF: bin/grok is a symlink into downloads/,
+        # which holds the real binary payloads. Wiping either uninstalls Grok.
+        "~/.grok/bin",
+        "~/.grok/downloads",
+        "~/.grok/version.json",  # auto-updater state
+        # config + runtime coordination
         "~/.grok/config.toml",
-        "~/.grok/memory",  # user-curated cross-session knowledge (MEMORY.md + index)
+        "~/.grok/leader.sock",
+        "~/.grok/leader*.lock",
+        # user-curated knowledge, same stance as every other preset
+        "~/.grok/memory",
         "~/.grok/skills",
         "$GROK_HOME/auth.json",
+        "$GROK_HOME/auth.json.lock",
         "$GROK_HOME/mcp_credentials.json",
+        "$GROK_HOME/mcp_credentials.json.lock",
+        "$GROK_HOME/bin",
+        "$GROK_HOME/downloads",
+        "$GROK_HOME/version.json",
         "$GROK_HOME/config.toml",
+        "$GROK_HOME/leader.sock",
+        "$GROK_HOME/leader*.lock",
         "$GROK_HOME/memory",
         "$GROK_HOME/skills",
     ),
-    notes="UNVERIFIED -- not in the registry. Paths await source verification "
-    "against xai-org/grok-build. Once confirmed: auth.json and "
-    "mcp_credentials.json are OAuth tokens (never wipe), and NeurAIlyzer "
-    "registers with: grok mcp add neurailyzer -- neurailyzer mcp serve",
+    notes="Layout source-verified against xai-org/grok-build @ 2a28b4a "
+    "(paths.rs grok_home/sessions_cwd_dir, auth/storage.rs, "
+    "mcp/credentials.rs). GROK_HOME is the install root as well as the state "
+    "root -- bin/ and downloads/ hold the binary itself and are never "
+    "touched. Liveness is read from leader.lock. Register NeurAIlyzer with: "
+    "grok mcp add neurailyzer -- neurailyzer mcp serve",
 )
 
 CODEX = Preset(
@@ -406,12 +434,13 @@ REGISTRY: dict[str, Preset] = {
     for p in (
         CLAUDE_CODE,
         CODEX,
+        GROK_BUILD,
         HERMES,
         SCION,
         VENICE_WEB,
-        # GROK_BUILD / OPENCODE are held out of the registry until their
-        # layouts are source-verified -- a guessed path in a wiper is a
-        # destructive bug, so unverified beats plausible.
+        # OpenCode lands once its layout is source-verified -- a guessed
+        # path in a wiper is a destructive bug, so unverified beats
+        # plausible (enforced by the check below).
     )
 }
 

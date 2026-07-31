@@ -64,6 +64,7 @@ neurailyzer detect --enable   # find what's installed, write the config
 | Preset | Harness | The trap it knows about |
 |---|---|---|
 | `claude-code` | Claude Code | durable auto-memory lives **inside** the session tree (`projects/*/memory`) — a naive `rm -rf` destroys it |
+| `grok-build` | Grok Build (xAI) | `GROK_HOME` is the **install root too** — `bin/` and `downloads/` hold the binary, so wiping them uninstalls Grok |
 | `codex` | OpenAI Codex CLI | runtime DBs carry schema-version suffixes (`state_5.sqlite`) — globbed, so version bumps don't rot the preset |
 | `hermes` | Hermes Agent (Nous Research) | `HERMES_HOME` mixes state with credentials *and the install*; `.env` holds every provider key, `pairing/` is an authorization allowlist |
 | `scion` | Scion (Google, experimental) | agent worktrees may hold **unmerged work**; `hub.db` holds identity/signing keys — neither is ever touched |
@@ -79,7 +80,7 @@ Every preset's keep-list is applied automatically, and each skip is reported. Se
 - Content-addressed snapshot store with retention pruning; restores are bit-identical and themselves reversible
 - **Harness presets** + `detect` for the five harnesses above, with glob keep-rules that protect state created *after* you enabled them
 - **Remote provider wipers** (`--scope remote`) for OpenAI, Anthropic, and xAI — per-surface opt-in, tokens from the environment, never logged
-- **Live-harness guard**: a commit-wipe refuses when a targeted harness looks like it's running (process match or SQLite WAL sidecar), because wiping a live WAL store corrupts rather than resets
+- **Live-harness guard**: a commit-wipe refuses when a targeted harness looks like it's running. Where a harness publishes its own pid (Claude Code's `sessions/<pid>.json`, Grok Build's `leader.lock`) that pid is read and checked for liveness — exact, and immune to stale files from a crash; elsewhere it falls back to command-line matching and SQLite WAL sidecars
 - CLI, MCP server (mcp 2.x, stdio + streamable-http), and library — one core, three surfaces
 - CI on Linux/macOS/Windows × Python 3.11–3.13, including E2E smoke tests that drive the real CLI over a realistic multi-harness home
 
@@ -87,7 +88,7 @@ Every preset's keep-list is applied automatically, and each skip is reported. Se
 
 - `rag` — vector-store wipers (Qdrant, Chroma, pgvector, Weaviate, Pinecone…)
 - `models` — runtime unload/KV-flush (Ollama, llama.cpp/llama-server, vLLM…)
-- More harness presets — **OpenCode** and **Grok Build** are researched but held back until every path is source-verified (a guessed path in a wiper is a destructive bug, so `REGISTRY` refuses unverified presets at import)
+- More harness presets — **OpenCode** is researched but held back until every path is source-verified (a guessed path in a wiper is a destructive bug, so `REGISTRY` refuses unverified presets at import)
 - Chat-store adapters that speak SQL schemas directly (Open WebUI, LibreChat…) rather than treating the DB as an opaque file
 - Scheduling/trigger hooks (end-of-task, cron) and snapshot encryption-at-rest
 
