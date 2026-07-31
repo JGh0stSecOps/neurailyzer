@@ -117,6 +117,9 @@ vacuously:
   guard. Exclusion is by pid now.
 
 ### Fixed — tests that passed for the wrong reason
+*(Four instances, all found by review rather than by the suite going red —
+which is the point: a vacuous test is invisible until someone checks what it
+would catch.)*
 - Nine of ten "credentials and memory survive" assertions in the flagship E2E
   sat **outside every wipe target**, so they would pass with no keep-list at
   all. The suite now proves containment first, and a new
@@ -126,6 +129,12 @@ vacuously:
   "claude" on any developer machine rather than by the sidecar they seed. The
   process scan is now stubbed so the sidecar is the only possible trigger,
   and they assert the reason and preset, not just the exit code.
+- The symlink-chmod guard test created its link in a *writable* directory, so
+  `unlink()` succeeded and the read-only recovery path — the only place the
+  guard lives — never ran. It would have passed with the guard deleted.
+- The E2E found its snapshot id by matching a `"2026"` prefix while the
+  fixture seeded `sessions/2026/07/30/…`, so line-wrapping at certain widths
+  matched the wrong token. It matches the full id shape now.
 
 ### Fixed — remote wiper hardening
 An adversarial review pass over the remote wipers found eleven defects; all
