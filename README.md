@@ -14,11 +14,11 @@
 
 ---
 
-> **Status: early development.** The design, CI, and guardrails are in place; implementation lands incrementally. This README describes the target, not yet shipped behavior.
+> **Status: alpha — the core works.** `wipe` / `snapshot` / `restore` are implemented and end-to-end tested for **file-based state** (`session` and `sandbox` scopes) on Linux, macOS, and Windows, from the CLI, the MCP server, and the library. See [What's built · what needs building](#whats-built--what-needs-building) — the CLI tells you honestly when a scope has no adapter yet.
 
 ## The idea
 
-Long-running agent systems don't drift because their **weights** change — the weights are frozen. They drift because of the **state that accumulates around them**: KV cache, conversation history, injected RAG memory, system-prompt cruft, tool-sandbox leftovers, and stored threads/files on remote providers. That accumulated state is what biases outputs and creeps storage.
+Long-running agent systems don't drift because their **weights** change — the weights are frozen. They drift because of the **state that accumulates around them**: KV cache, conversation history, injected RAG memory, instruction cruft, tool-sandbox leftovers, and stored threads/files on remote providers. That accumulated state is what biases outputs and creeps storage.
 
 **NeurAIlyzer is the flash that resets it.** It:
 
@@ -42,39 +42,96 @@ Adapters are pluggable — implement the small `Wiper` contract for a store we d
 
 ## What it resets (and what it can't)
 
-| Layer | Wipeable? |
-|---|---|
-| Local runtime state (KV cache, resident models) | ✅ unload + flush |
-| Conversation / thread history (any chat store) | ✅ scoped delete |
-| RAG / vector memory | ✅ scoped/collection delete |
-| Tool-sandbox scratch, temp/cache | ✅ reset |
-| Remote provider state (threads/files/assistants/fine-tunes) | ⚠️ where the API allows |
-| Base-model "bias" (the frozen weights) | ❌ not state — swap the model, you can't wipe it |
+| Layer | Scope | Status |
+|---|---|---|
+| Conversation / thread history (file/JSONL/SQLite stores) | `session` | ✅ **shipped** |
+| Tool-sandbox scratch, temp/cache | `sandbox` | ✅ **shipped** |
+| RAG / vector memory | `rag` | 🔜 adapter planned |
+| Local runtime state (KV cache, resident models) | `models` | 🔜 adapter planned |
+| Remote provider state (threads/files/assistants/fine-tunes) | `remote` | 🔜 planned, where the API allows |
+| Base-model "bias" (the frozen weights) | — | ❌ not state — swap the model, you can't wipe it |
 
 The honest line: you can't wipe a hosted model's training. You *can* wipe every bit of **state you created** around it — and that's what actually drifts.
 
+## What's built · what needs building
+
+**Built and tested today (v0.1):**
+
+- `wipe` / `snapshot` / `restore` for any **file-tree state** — session transcripts, chat DB files, JSONL history, sandbox scratch, temp dirs — with dry-run defaults, keep-list protection, and point-in-time rollback
+- Content-addressed snapshot store with retention pruning; restores are bit-identical and themselves reversible
+- CLI, MCP server (mcp 2.x, stdio + streamable-http), and library — one core, three surfaces
+- CI on Linux/macOS/Windows × Python 3.11–3.13, including an E2E smoke test that drives the real CLI
+
+**Needs building (adapters welcome — see [the taxonomy](docs/WIPE-TAXONOMY.md) and [CONTRIBUTING](CONTRIBUTING.md)):**
+
+- `rag` — vector-store wipers (Qdrant, Chroma, pgvector, Weaviate, Pinecone…)
+- `models` — runtime unload/KV-flush (Ollama, llama.cpp/llama-server, vLLM…)
+- `remote` — provider-side stored state, behind per-provider capability flags
+- Chat-store adapters that speak SQL schemas directly (Open WebUI, LibreChat…) rather than treating the DB as an opaque file
+- Scheduling/trigger hooks (end-of-task, cron) and snapshot encryption-at-rest
+
+Each of these is one `Wiper` implementation (`plan()` / `commit()` / `verify()`) — the safety rails, snapshots, CLI, and MCP surface come for free.
+
 ## Interfaces
 
-- **CLI** — `neurailyzer wipe --scope … · list-state · snapshot · restore --to <T>`
+- **CLI** — `neurailyzer list-state · wipe <scope…> · snapshot · restore --to <T>`
 - **MCP server** — the same verbs as MCP tools, so any agent (Claude, Codex, GPT-based, local…) can call it mid-workflow
 - **Library** — import the core and drive it from your own orchestrator
 
 ## Safety
 
-Wiping is destructive, so the defaults are conservative: **dry-run by default**, an explicit `--commit` to act, a **keep-list** that's never touched, and a **snapshot taken before every wipe** so any reset is reversible. See [SECURITY.md](SECURITY.md).
+Wiping is destructive, so the defaults are conservative — and tested end-to-end on all three platforms:
+
+- **Dry-run by default.** `wipe` and `restore` print a plan; `--commit` is required to act.
+- **Snapshot before every commit** — wipes *and* restores — so any reset is reversible (`--no-snapshot` exists but shouts).
+- **Keep-list** entries are never touched, and every skip is reported.
+- **Symlinks are never followed.** A sandbox link aimed at your home directory removes the link, not your home.
+- **Config sanity guards** refuse targets like `/`, your home directory, or anything containing the snapshot store.
+
+See [SECURITY.md](SECURITY.md).
+
+## Install
+
+```bash
+pip install "neurailyzer[mcp] @ git+https://github.com/JGh0stSecOps/neurailyzer@main"
+```
+
+(or clone and `pip install -e ".[mcp]"`; drop `[mcp]` if you don't need the MCP server. Python ≥ 3.11.)
 
 ## Quick start
 
-*Planned surface — implementation in progress.*
+Point NeurAIlyzer at your agent's state in `~/.neurailyzer/config.toml`:
+
+```toml
+[keep]
+# NEVER wiped, no matter what. Skips are reported, never silent.
+paths = ["~/agents/memory"]
+
+[targets.session]           # conversation/thread history (files, JSONL, SQLite…)
+paths = ["~/agents/sessions"]
+
+[targets.sandbox]           # tool-sandbox scratch, downloads, temp
+paths = ["~/agents/scratch"]
+
+[snapshots]
+dir = "~/.neurailyzer/snapshots"   # always outside the wipe targets; auto-kept
+retention = 20                     # snapshots pruned beyond this count
+```
+
+Then:
 
 ```bash
-neurailyzer list-state                      # what exists + would be affected
-neurailyzer snapshot --label pre-task       # take a restore point
-neurailyzer wipe --scope session            # dry-run: what would be wiped
-neurailyzer wipe --scope session --commit   # actually wipe (snapshot taken first)
-neurailyzer restore --to 2026-07-09T04:00   # roll state back to a point in time
-neurailyzer mcp serve                        # expose the verbs to agents
+neurailyzer list-state                     # what exists + what a wipe would affect
+neurailyzer snapshot --label pre-task      # take a restore point
+neurailyzer wipe session                   # dry-run: what would be wiped
+neurailyzer wipe session --commit          # actually wipe (snapshot taken first)
+neurailyzer snapshot --list                # your restore points
+neurailyzer restore --to 2026-07-09T04:00  # dry-run a point-in-time rollback
+neurailyzer restore --to 2026-07-09T04:00 --commit
+neurailyzer mcp serve                      # expose the verbs to agents (stdio)
 ```
+
+`restore --to` accepts an ISO-8601 time (nearest snapshot at or before it wins) or an exact snapshot id. A commit-restore snapshots the current state first, so even a rollback is reversible. A factory reset (`wipe all --commit`) additionally demands `--confirm all`, and is refused entirely over MCP — that lever is human-only.
 
 ## Contributing
 

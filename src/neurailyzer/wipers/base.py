@@ -24,6 +24,7 @@ class WipePlan:
     scope: str
     description: str
     item_count: int = 0
+    bytes_total: int = 0
     reversible: bool = True
     notes: tuple[str, ...] = ()
 
