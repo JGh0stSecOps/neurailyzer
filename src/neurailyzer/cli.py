@@ -404,7 +404,7 @@ def restore(
         # applies here too -- and a rewritten SQLite db under a live -wal is
         # worse than either alone.
         snap_roots = tuple(Path(p) for rs in snap.targets.values() for p in rs)
-        if not _liveness_ok(cfg, list(snap.targets), force=force, extra_roots=snap_roots):
+        if not _liveness_ok(cfg, [], force=force, extra_roots=snap_roots):
             raise typer.Exit(code=3)
         # a restore is destructive too -- snapshot current state first
         pre = store.take(

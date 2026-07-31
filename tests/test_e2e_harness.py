@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,19 @@ def run_cli(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]
         timeout=180,
         env=env,
     )
+
+
+#: a snapshot id is <UTC compact timestamp>-<4 hex>-<label>. Matching on a
+#: bare "2026" prefix is not enough: the fixture seeds
+#: ~/.codex/sessions/2026/07/30/..., and when Rich wraps that path at the
+#: wrong column the continuation line starts with "2026" too.
+_SNAP_ID = re.compile(r"\b\d{8}T\d{6}Z-[0-9a-f]{4}-[\w.-]+")
+
+
+def _snapshot_id(stdout: str) -> str:
+    ids = _SNAP_ID.findall(stdout)
+    assert ids, f"no snapshot id in output:\n{stdout}"
+    return ids[0]
 
 
 def tree_bytes(root: Path) -> dict[str, bytes]:
@@ -153,7 +167,7 @@ def test_detect_enable_wipe_restore(harness_home: dict[str, Any]) -> None:
     #    parent, so --force keeps the test deterministic.
     r = run_cli(env, "wipe", "session", "sandbox", "--commit", "--force")
     assert r.returncode == 0, r.stderr + r.stdout
-    snap_id = next(tok for tok in r.stdout.split() if tok.startswith("2026"))
+    snap_id = _snapshot_id(r.stdout)
 
     # history is gone ...
     assert not (harness_home["proj"] / "sess-1.jsonl").exists()
