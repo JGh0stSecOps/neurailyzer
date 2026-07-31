@@ -37,6 +37,13 @@ vacuously:
 - **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
   file outside the target tree. It now refuses rather than following.
 
+### Fixed — the snapshot store no longer leaks what it protects
+- **A `0600` credential was copied into a `0644` blob under a `0755` tree.**
+  The store holds verbatim copies of whatever was in the wipe targets, so on
+  a shared machine the hygiene tool itself disclosed the secrets it was asked
+  to clean up around. The store, its blobs, and its manifests (which list
+  every path that existed) are created owner-only.
+
 ### Fixed — a wipe that could not read everything now says so
 - **An unreadable subtree made a wipe silently partial while `verify()`
   returned True.** `os.walk` swallows permission errors by default, so a

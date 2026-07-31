@@ -35,6 +35,13 @@ from .config import KeepList
 _BLOBS = "blobs"
 _MANIFESTS = "manifests"
 
+#: The store holds VERBATIM COPIES of whatever was in the wipe targets --
+#: session transcripts, and any credential a user pointed a target at. It is
+#: therefore created owner-only: a hygiene tool must not be the thing that
+#: discloses the secrets it was asked to clean up around.
+_STORE_DIR_MODE = 0o700
+_BLOB_FILE_MODE = 0o600
+
 
 class SnapshotError(RuntimeError):
     """A snapshot operation failed. The message says why."""
@@ -182,6 +189,14 @@ class SnapshotStore:
 
     # -- take -----------------------------------------------------------------
 
+    def _mkdir_private(self, path: Path) -> None:
+        """Create *path* (and parents) owner-only where the OS supports it."""
+        path.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            for d in (path, *[p for p in path.parents if self.root in p.parents or p == self.root]):
+                with contextlib.suppress(OSError):
+                    os.chmod(d, _STORE_DIR_MODE)
+
     def take(
         self,
         targets: dict[str, tuple[Path, ...]],
@@ -189,8 +204,11 @@ class SnapshotStore:
         remote_manifest: dict[str, Any] | None = None,
     ) -> Snapshot:
         """Record every file/dir/symlink under the target roots."""
-        self.blob_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        self._mkdir_private(self.blob_dir)
+        self._mkdir_private(self.manifest_dir)
+        if os.name != "nt":
+            with contextlib.suppress(OSError):
+                os.chmod(self.root, _STORE_DIR_MODE)
 
         now = datetime.now(UTC)
         slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)[:40] or "snap"
@@ -256,15 +274,24 @@ class SnapshotStore:
         }
         path = self.manifest_dir / f"{snap_id}.json"
         path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+        if os.name != "nt":
+            # a manifest lists every path that existed -- itself sensitive
+            with contextlib.suppress(OSError):
+                os.chmod(path, _BLOB_FILE_MODE)
         return snap
 
     def _store_blob(self, src: Path) -> str:
         digest = _hash_file(src)
         dest = self.blob_dir / digest[:2] / digest
         if not dest.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            self._mkdir_private(dest.parent)
             tmp = dest.with_suffix(".tmp")
             tmp.write_bytes(src.read_bytes())
+            if os.name != "nt":
+                # the source may be a 0600 credential; the copy must not be
+                # more permissive than the original ever was
+                with contextlib.suppress(OSError):
+                    os.chmod(tmp, _BLOB_FILE_MODE)
             tmp.replace(dest)
         return digest
 

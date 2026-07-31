@@ -246,3 +246,27 @@ def test_a_remote_only_snapshot_does_not_shadow_a_real_restore_point(
     assert latest.id == real.id, "a content-free snapshot shadowed the real one"
     # ...but it is still reachable by exact id, since it records what was deleted
     assert store.resolve(manifest_only.id) is not None
+
+
+def test_the_snapshot_store_is_owner_only(state: dict[str, Path]) -> None:
+    """The store holds verbatim copies of whatever was in the wipe targets.
+
+    A hygiene tool must not be the thing that discloses the secrets it was
+    asked to clean up around: a 0600 credential copied into a 0644 blob under
+    a 0755 tree is readable by every other user on the machine.
+    """
+    if os.name == "nt":
+        pytest.skip("POSIX modes")
+    secret = state["sandbox"] / "auth.json"
+    secret.write_text('{"token":"s3cret"}')
+    secret.chmod(0o600)
+
+    store, targets = _store_and_targets(state)
+    store.take(targets, "with-a-credential")
+
+    assert store.root.stat().st_mode & 0o077 == 0, "store root is group/world readable"
+    assert store.blob_dir.stat().st_mode & 0o077 == 0
+    for blob in store.blob_dir.glob("*/*"):
+        assert blob.stat().st_mode & 0o077 == 0, f"{blob} is readable by others"
+    for manifest in store.manifest_dir.glob("*.json"):
+        assert manifest.stat().st_mode & 0o077 == 0, "manifest lists every path"
