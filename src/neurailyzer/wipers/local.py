@@ -123,17 +123,24 @@ class PathWiper(Wiper):
 
     def commit(self) -> WipePlan:
         doomed, doomed_dirs, skipped, errors = self._survey()
+        removed = 0
         for p in doomed:
-            _force_unlink(p)
+            try:
+                _force_unlink(p)
+                removed += 1
+            except OSError as exc:
+                # one stubborn file must not abort the rest of the wipe --
+                # and must not be counted as removed either
+                errors.append(f"could not remove {p}: {exc.strerror or exc}")
         # deepest first, so children fall before parents; kept content holds a dir up
         for d in sorted(doomed_dirs, key=lambda x: len(x.parts), reverse=True):
             with contextlib.suppress(OSError):
                 d.rmdir()
         return WipePlan(
             scope=self.scope,
-            description=f"removed {len(doomed)} file(s)/link(s) under: "
+            description=f"removed {removed} of {len(doomed)} file(s)/link(s) under: "
             + ", ".join(str(r) for r in self.roots),
-            item_count=len(doomed),
+            item_count=removed,
             reversible=True,
             complete=not errors,
             notes=(

@@ -112,13 +112,13 @@ A configurable allow-list of paths / collections / memory keys that are **never*
 - **Dry-run default.** `wipe`/`restore` print a plan; `--commit` is required to act.
 - **Snapshot-before-wipe.** Always. `--no-snapshot` exists but shouts.
 - **Keep-list.** Honored on every wipe (§8).
-- **Scoped credentials.** Remote adapters use least-privilege, per-provider tokens from env/keyring — never a broad admin token.
+- **Scoped credentials.** Remote adapters read least-privilege, per-provider tokens from the **environment** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`) — never a broad admin token, never logged, never stored in config. OS-keyring sourcing is a possible future addition; today it is env vars only.
 - **Confirmation token** for `--scope all --commit` (type the target name).
 
 ## 10. Threat model
 
 - **Destructive misfire** → dry-run default + snapshot-before-wipe + keep-list.
-- **Credential exposure** (remote adapters hold provider tokens) → least-privilege tokens, env/keyring only, never logged, never in the repo.
+- **Credential exposure** (remote adapters hold provider tokens) → least-privilege tokens, read from the environment only, stripped of stray whitespace, never logged, never in the repo. The snapshot store is created owner-only, since it holds copies of whatever was in the targets.
 - **Snapshot as exfil surface** (snapshots contain the state) → encrypt-at-rest option, local-only by default, retention limits.
 - **Supply chain** (agentic contributions) → the injection/slop PR guard screens PRs before review.
 

@@ -80,7 +80,7 @@ Every preset's keep-list is applied automatically, and each skip is reported. A 
 - `wipe` / `snapshot` / `restore` for any **file-tree state** — session transcripts, chat DB files, JSONL history, sandbox scratch, temp dirs — with dry-run defaults, keep-list protection, and point-in-time rollback
 - Content-addressed snapshot store with retention pruning; restores are bit-identical and themselves reversible
 - **Harness presets** + `detect` for the seven harnesses above, with glob keep-rules that protect state created *after* you enabled them
-- **Remote provider wipers** (`--scope remote`) for OpenAI, Anthropic, and xAI — per-surface opt-in, tokens from the environment, never logged
+- **Remote provider wipers** (`wipe remote`) for OpenAI, Anthropic, and xAI — per-surface opt-in, tokens from the environment, never logged
 - **Live-harness guard**: a commit-wipe refuses when a targeted harness looks like it's running. Where a harness publishes its own pid (Claude Code's `sessions/<pid>.json`, Grok Build's `leader.lock`) that pid is read and checked for liveness — exact, and immune to stale files from a crash; elsewhere it falls back to command-line matching and SQLite WAL sidecars
 - CLI, MCP server (mcp 2.x, stdio + streamable-http), and library — one core, three surfaces
 - CI on Linux/macOS/Windows × Python 3.11–3.13, including E2E smoke tests that drive the real CLI over a realistic multi-harness home

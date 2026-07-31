@@ -363,7 +363,7 @@ def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
         elif s == REMOTE_SCOPE:
             console.print(
                 f"  - {s}: [yellow]no providers configured -- skipped[/yellow] "
-                "[dim](see [remote.<provider>] in the README)[/dim]"
+                "[dim](see \\[remote.<provider>] in the README)[/dim]"
             )
         else:
             console.print(f"  - {s}: [dim]no adapter yet -- skipped[/dim]")
@@ -404,7 +404,7 @@ def restore(
         # applies here too -- and a rewritten SQLite db under a live -wal is
         # worse than either alone.
         snap_roots = tuple(Path(p) for rs in snap.targets.values() for p in rs)
-        if not _liveness_ok(cfg, [], force=force, extra_roots=snap_roots):
+        if not _liveness_ok(cfg, list(snap.targets), force=force, extra_roots=snap_roots):
             raise typer.Exit(code=3)
         # a restore is destructive too -- snapshot current state first
         pre = store.take(

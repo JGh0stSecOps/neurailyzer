@@ -408,6 +408,12 @@ class SnapshotStore:
         dir_roots = set(snap.dir_roots)
         for (target, relpath), rec in sorted(wanted_files.items()):
             dest = _dest(target, relpath, dir_roots)
+            if keep.protects(dest):
+                # "never touched" has to mean the WRITE half too: rolling a
+                # rotated credential back to its old value is exactly the
+                # kind of silent damage the keep-list exists to prevent.
+                plan.skipped_keep.append(str(dest))
+                continue
             blob = self.blob_dir / rec.sha256[:2] / rec.sha256
             differs = not (
                 dest.is_file() and not dest.is_symlink() and _hash_file(dest) == rec.sha256
@@ -441,6 +447,9 @@ class SnapshotStore:
                     os.chmod(dest, drec.mode)
         for (target, relpath), lrec in sorted(wanted_links.items()):
             dest = _dest(target, relpath, dir_roots)
+            if keep.protects(dest):
+                plan.skipped_keep.append(str(dest))
+                continue
             if dest.is_symlink() and os.readlink(dest) == lrec.link_to:
                 continue
             plan.restored.append(str(dest))

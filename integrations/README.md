@@ -82,7 +82,7 @@ mcp_servers:
 
 ## Remote provider state
 
-Provider-side objects are wiped through `--scope remote`, opt-in per surface,
+Provider-side objects are wiped through `wipe remote`, opt-in per surface,
 with tokens read from the environment and never logged:
 
 ```toml

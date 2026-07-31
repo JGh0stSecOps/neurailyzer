@@ -236,3 +236,56 @@ def test_readonly_symlink_is_not_chmodded_through(tmp_path: Path) -> None:
     wiper.commit()
     assert outside.stat().st_mode & 0o777 == 0o644, "chmod leaked through the symlink"
     assert outside.read_text() == "data"
+
+
+def test_restore_does_not_clobber_a_keep_list_file(tmp_path: Path) -> None:
+    """ "Never touched" has to cover restore's WRITE half too.
+
+    The keep-list stopped restore REMOVING a protected file but not
+    overwriting it, so rolling back reverted a rotated credential to its old
+    value -- silent damage of exactly the kind the keep-list exists to stop.
+    """
+    from neurailyzer.snapshots import SnapshotStore
+
+    target = tmp_path / "state"
+    target.mkdir()
+    kept = target / "auth.json"
+    kept.write_text("OLD-TOKEN")
+    (target / "chat.jsonl").write_text("old history")
+
+    store = SnapshotStore(tmp_path / "snaps")
+    snap = store.take({"session": (target,)}, "before-rotation")
+
+    kept.write_text("NEW-TOKEN-rotated-since")
+    (target / "chat.jsonl").write_text("new history")
+
+    plan = store.restore(snap, KeepList(paths=(kept,)))
+
+    assert kept.read_text() == "NEW-TOKEN-rotated-since", "restore reverted a kept file"
+    assert str(kept) in plan.skipped_keep, "the skip was not reported"
+    # the unprotected file still rolls back, so the test is not vacuous
+    assert (target / "chat.jsonl").read_text() == "old history"
+
+
+def test_a_stubborn_file_does_not_abort_the_whole_wipe(tmp_path: Path) -> None:
+    """One entry we cannot remove must not strand the rest of the wipe."""
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    target = tmp_path / "state"
+    locked_dir = target / "locked"
+    locked_dir.mkdir(parents=True)
+    (locked_dir / "stuck.txt").write_text("cannot remove me")
+    (target / "a.txt").write_text("removable")
+    (target / "b.txt").write_text("also removable")
+    locked_dir.chmod(0o500)  # can read, cannot unlink from it
+
+    wiper, _roots = _wipe(_config(tmp_path, target, []))
+    try:
+        result = wiper.commit()
+        assert not (target / "a.txt").exists(), "the wipe aborted early"
+        assert not (target / "b.txt").exists()
+        assert (locked_dir / "stuck.txt").exists()
+        assert result.complete is False
+        assert any("could not remove" in n for n in result.notes)
+    finally:
+        locked_dir.chmod(0o700)

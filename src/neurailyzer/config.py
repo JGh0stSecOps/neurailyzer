@@ -1,8 +1,8 @@
 """Configuration: wipe targets, the keep-list, and snapshot settings.
 
-Credentials are never stored here — remote wipers (when they land) read
-least-privilege, per-provider tokens from the environment / OS keyring at call
-time (see DESIGN §8).
+Credentials are never stored here: remote wipers read least-privilege,
+per-provider tokens from the ENVIRONMENT at call time (see DESIGN, Safety
+rails). Keyring sourcing is not implemented.
 
 Discovery order for the config file:
 

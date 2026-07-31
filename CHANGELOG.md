@@ -37,6 +37,16 @@ vacuously:
 - **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
   file outside the target tree. It now refuses rather than following.
 
+### Fixed — "never touched" now covers restore's write half
+- **Restore overwrote keep-list files.** The keep-list stopped restore
+  *removing* a protected file but not *rewriting* it, so rolling back
+  reverted a rotated credential to its old value — silent damage of exactly
+  the kind the keep-list exists to prevent. Protected destinations are now
+  skipped and reported.
+- **One un-removable file aborted the whole wipe.** A `PermissionError` that
+  survived the read-only retry escaped `commit()`, stranding every remaining
+  file. Failures are counted, reported, and mark the plan incomplete.
+
 ### Fixed — the snapshot store no longer leaks what it protects
 - **Restore recreated a `0700` directory as `0755`**, so rolling back turned
   a private tree world-readable as a side effect. Directory modes are
@@ -148,7 +158,7 @@ are fixed with a regression test each:
   import, so an unconfirmed path can never reach a wipe plan.
 - **Glob keep-list entries.** `~/.claude/projects/*/memory` protects matches
   created *after* the config was loaded, not just ones that existed then.
-- **Remote provider wipers** (`--scope remote`) for OpenAI, Anthropic, and
+- **Remote provider wipers** (`wipe remote`) for OpenAI, Anthropic, and
   xAI, configured per surface via `[remote.<provider>]`. Tokens are read from
   the environment and never logged; a surface ships only where both list and
   delete endpoints exist. Remote deletes are marked irreversible and the
