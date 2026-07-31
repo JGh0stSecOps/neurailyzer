@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from neurailyzer import snapshots as snapshots_mod
 from neurailyzer.config import KeepList, load
 from neurailyzer.snapshots import SnapshotError, SnapshotStore, parse_point_in_time
 
@@ -161,3 +163,65 @@ def test_snapshot_store_dedupes_blobs(state: dict[str, Path]) -> None:
     store.take(targets, "b")  # identical content -> no new blobs
     n2 = len(list(store.blob_dir.glob("*/*")))
     assert n1 == n2
+
+
+# -- resilience: the restore path IS the safety net --------------------------
+
+
+def test_one_corrupt_manifest_does_not_hide_the_others(state: dict[str, Path]) -> None:
+    """A single truncated file must not make every restore point unreachable."""
+    store, targets = _store_and_targets(state)
+    good = store.take(targets, "good")
+    (store.manifest_dir / "broken.json").write_text("{ truncated", encoding="utf-8")
+
+    snaps = store.list()
+    assert [s.id for s in snaps] == [good.id]
+    assert store.corrupt and "broken.json" in store.corrupt[0]
+    # and it is still resolvable/restorable
+    assert store.resolve(good.id) is not None
+
+
+def test_corrupt_manifests_are_reported_not_swallowed(state: dict[str, Path]) -> None:
+    """Silently losing a snapshot the user believes they have is just as bad
+    as raising on it."""
+    store, targets = _store_and_targets(state)
+    store.take(targets, "good")
+    (store.manifest_dir / "bad.json").write_text('{"id": "x"}', encoding="utf-8")
+    store.list()
+    assert any("bad.json" in c for c in store.corrupt)
+
+
+def test_dry_run_restore_reports_a_missing_blob(state: dict[str, Path]) -> None:
+    """A dry-run that lists a file it cannot actually restore is worse than
+    useless -- it is a safety net promising a catch it will drop."""
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "golden")
+    (state["sandbox"] / "notes.txt").unlink()
+    for blob in store.blob_dir.glob("*/*"):
+        blob.unlink()
+
+    plan = store.plan_restore(snap, KeepList())
+    assert plan.errors, "dry-run stayed silent about unrestorable files"
+    assert any("missing blob" in e for e in plan.errors)
+    assert not plan.restored, "planned a restore it cannot perform"
+
+
+def test_force_unlink_does_not_chmod_through_a_symlink(
+    state: dict[str, Path], tmp_path: Path
+) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX modes")
+    if not state["has_symlinks"]:
+        pytest.skip("symlinks unavailable")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("data")
+    outside.chmod(0o644)
+    link = state["sandbox"] / "ln"
+    link.symlink_to(outside)
+    link.parent.chmod(0o500)  # make unlink fail -> exercise the recovery path
+    try:
+        with contextlib.suppress(PermissionError, OSError):
+            snapshots_mod._force_unlink(link)
+    finally:
+        link.parent.chmod(0o700)
+    assert outside.stat().st_mode & 0o777 == 0o644, "chmod leaked through the link"

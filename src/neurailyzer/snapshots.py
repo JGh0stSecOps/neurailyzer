@@ -177,6 +177,8 @@ class SnapshotStore:
         self.root = root
         self.blob_dir = root / _BLOBS
         self.manifest_dir = root / _MANIFESTS
+        #: manifests that could not be read on the last list() call
+        self.corrupt: builtins.list[str] = []
 
     # -- take -----------------------------------------------------------------
 
@@ -269,15 +271,23 @@ class SnapshotStore:
     # -- list / resolve -------------------------------------------------------
 
     def list(self) -> builtins.list[Snapshot]:
-        """All snapshots, oldest first."""
+        """All readable snapshots, oldest first.
+
+        A corrupt manifest is SKIPPED, not raised: one truncated file must
+        not make every other restore point in the store unreachable. The
+        damaged ids are recorded in :attr:`corrupt` so callers can surface
+        them -- silently losing a snapshot the user believes they have would
+        be just as bad.
+        """
+        self.corrupt = []
         if not self.manifest_dir.is_dir():
             return []
         snaps: builtins.list[Snapshot] = []
         for mf in sorted(self.manifest_dir.glob("*.json")):
             try:
                 snaps.append(_parse_manifest(json.loads(mf.read_text(encoding="utf-8"))))
-            except (json.JSONDecodeError, KeyError, TypeError) as exc:
-                raise SnapshotError(f"corrupt manifest {mf}: {exc}") from exc
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError) as exc:
+                self.corrupt.append(f"{mf.name}: {exc}")
         snaps.sort(key=lambda s: s.taken_at)
         return snaps
 
@@ -342,11 +352,13 @@ class SnapshotStore:
             )
             if not differs:
                 continue
+            if not blob.exists():
+                # report this while PLANNING too -- a dry-run that lists a
+                # file it cannot actually restore is worse than useless
+                plan.errors.append(f"missing blob for {dest} ({rec.sha256[:12]}...)")
+                continue
             plan.restored.append(str(dest))
             if not commit:
-                continue
-            if not blob.exists():
-                plan.errors.append(f"missing blob for {dest} ({rec.sha256[:12]}...)")
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.exists() or dest.is_symlink():
@@ -404,9 +416,18 @@ def _dest(target: str, relpath: str, dir_roots: set[str]) -> Path:
 
 
 def _force_unlink(path: Path) -> None:
-    """Unlink even Windows read-only files. Never follows symlinks."""
+    """Unlink, clearing a read-only attribute if that is what blocks us.
+
+    The chmod recovery never runs on a symlink: os.chmod FOLLOWS links, so it
+    would rewrite the mode of the destination -- a file outside the target
+    that we were never authorized to touch. (This is the twin of the guard in
+    wipers/local.py; it was missing here, and the old docstring claimed a
+    safety property the code did not have.)
+    """
     try:
         path.unlink()
     except PermissionError:
+        if path.is_symlink():
+            raise
         os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
         path.unlink()

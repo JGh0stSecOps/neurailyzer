@@ -65,18 +65,32 @@ _PRECIOUS_HOME_DIRS: tuple[str, ...] = (
 )
 
 
+def _same(a: Path, b: Path) -> bool:
+    """Path equality that respects the filesystem's case rules."""
+    return _norm(a) == _norm(b)
+
+
+def _within(path: Path, ancestor: Path) -> bool:
+    return _same(path, ancestor) or any(_same(p, ancestor) for p in path.parents)
+
+
 def _forbidden_target_reason(path: Path) -> str | None:
-    """A target this broad is a config mistake, not a wipe request."""
+    """A target this broad is a config mistake, not a wipe request.
+
+    Comparisons are case-insensitive where the filesystem is: on macOS
+    ``~/downloads`` and ``~/Downloads`` are the same directory, so a
+    byte-exact check would wave the dangerous spelling straight through.
+    """
     home = Path.home().resolve()
-    if path == Path(path.anchor):
+    if _same(path, Path(path.anchor)):
         return "is a filesystem root"
-    if path == home:
+    if _same(path, home):
         return "is your home directory"
-    if path in home.parents:
+    if any(_same(home, p) or _same(p, home) for p in [home, *home.parents]) and _within(home, path):
         return "contains your home directory"
     for name in _PRECIOUS_HOME_DIRS:
         candidate = home / name
-        if path == candidate or candidate in path.parents:
+        if _within(path, candidate):
             return (
                 f"resolves inside {candidate} -- if a harness path links there, "
                 "wipe the harness's own directory instead"

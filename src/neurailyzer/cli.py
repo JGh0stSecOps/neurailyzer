@@ -206,6 +206,8 @@ def snapshot(
     store = SnapshotStore(cfg.snapshot_dir)
     if list_:
         snaps = store.list()
+        for bad in store.corrupt:
+            err_console.print(f"[red]unreadable snapshot[/red] {bad}")
         if not snaps:
             console.print("[dim]no snapshots yet[/dim]")
             return
@@ -371,6 +373,11 @@ def restore(
     store = SnapshotStore(cfg.snapshot_dir)
     try:
         snap = store.resolve(to)
+        for bad in store.corrupt:
+            err_console.print(
+                f"[yellow]warning:[/yellow] unreadable snapshot {bad} -- "
+                "it was skipped when resolving"
+            )
     except SnapshotError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2) from exc
@@ -384,7 +391,13 @@ def restore(
         f"(taken {snap.taken_at.isoformat()})"
     )
     if commit:
-        # a restore is destructive too — snapshot current state first
+        # a restore rewrites and deletes files, so the live-harness hazard
+        # applies here too -- and a rewritten SQLite db under a live -wal is
+        # worse than either alone.
+        snap_roots = tuple(Path(p) for rs in snap.targets.values() for p in rs)
+        if not _liveness_ok(cfg, [], force=force, extra_roots=snap_roots):
+            raise typer.Exit(code=3)
+        # a restore is destructive too -- snapshot current state first
         pre = store.take(
             {s: tuple(Path(p) for p in roots) for s, roots in snap.targets.items()},
             label="pre-restore",

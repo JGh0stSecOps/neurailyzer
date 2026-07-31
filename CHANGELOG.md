@@ -37,6 +37,24 @@ vacuously:
 - **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
   file outside the target tree. It now refuses rather than following.
 
+### Fixed — the restore path is the safety net, so it must not be brittle
+- **One truncated manifest made every snapshot in the store unreachable.**
+  `list()` raised, so `snapshot --list`, `restore` and pruning all failed —
+  a single corrupt file took every other restore point down with it. Damaged
+  manifests are now skipped *and reported* (silently losing a snapshot the
+  user believes they have would be equally bad).
+- **A dry-run restore never checked that the blobs still exist**, so it
+  listed files it could not actually restore — a safety net promising a
+  catch it would drop. Missing blobs are reported while planning.
+- **`snapshots._force_unlink` chmodded through symlinks** despite a docstring
+  claiming otherwise; it was missing the guard its twin in `wipers/local.py`
+  had.
+- **`restore --force` was a dead flag**: the liveness guard never ran on the
+  restore path, though a restore rewrites and deletes files.
+- **The "precious directory" and home-directory refusals compared paths
+  case-sensitively**, so on macOS and Windows `~/downloads` sailed past a
+  guard that stopped `~/Downloads` — the same directory.
+
 ### Fixed — the guard, on every surface
 - **A WAL sidecar was blamed on every enabled preset**, so one file under
   Codex's tree reported Hermes as running — a harness the user may not even
