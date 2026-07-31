@@ -292,13 +292,23 @@ class SnapshotStore:
         return snaps
 
     def resolve(self, to: str) -> Snapshot | None:
-        """*to* is a snapshot id, or a time -- nearest snapshot at/before it."""
+        """*to* is a snapshot id, or a time -- nearest snapshot at/before it.
+
+        Snapshots that record no file targets at all (a remote-only wipe
+        takes one purely to keep the id manifest) are skipped when resolving
+        BY TIME: they carry nothing to roll a file tree back to, so letting
+        one answer "restore me to now" would silently shadow the real restore
+        point sitting just behind it. They remain resolvable by exact id.
+        """
         snaps = self.list()
         for s in snaps:
             if s.id == to:
                 return s
         point = parse_point_in_time(to)
         eligible = [s for s in snaps if s.taken_at <= point]
+        with_content = [s for s in eligible if s.targets]
+        if with_content:
+            return with_content[-1]
         return eligible[-1] if eligible else None
 
     # -- restore --------------------------------------------------------------

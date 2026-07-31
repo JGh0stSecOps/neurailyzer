@@ -225,3 +225,24 @@ def test_force_unlink_does_not_chmod_through_a_symlink(
     finally:
         link.parent.chmod(0o700)
     assert outside.stat().st_mode & 0o777 == 0o644, "chmod leaked through the link"
+
+
+def test_a_remote_only_snapshot_does_not_shadow_a_real_restore_point(
+    state: dict[str, Path],
+) -> None:
+    """A remote-only wipe takes a snapshot purely to keep the id manifest.
+
+    It records no file targets, so letting it answer "restore me to now"
+    would silently roll a tree back to nothing while the real restore point
+    sat one entry behind it.
+    """
+    store, targets = _store_and_targets(state)
+    real = store.take(targets, "real-work")
+    time.sleep(1.1)  # ids have 1s resolution
+    manifest_only = store.take({}, "remote-only")
+
+    latest = store.resolve((datetime.now(UTC) + timedelta(hours=1)).isoformat())
+    assert latest is not None
+    assert latest.id == real.id, "a content-free snapshot shadowed the real one"
+    # ...but it is still reachable by exact id, since it records what was deleted
+    assert store.resolve(manifest_only.id) is not None

@@ -43,6 +43,12 @@ vacuously:
   a single corrupt file took every other restore point down with it. Damaged
   manifests are now skipped *and reported* (silently losing a snapshot the
   user believes they have would be equally bad).
+- **A remote-only wipe's snapshot shadowed the real restore point.** It
+  records no file targets (it exists to keep the deleted-id manifest), yet
+  it was the nearest snapshot to "now" — so `restore --to <now>` after one
+  silently rolled a tree back to nothing while the real restore point sat
+  one entry behind. Content-free snapshots are skipped when resolving by
+  time, and remain reachable by exact id.
 - **A dry-run restore never checked that the blobs still exist**, so it
   listed files it could not actually restore — a safety net promising a
   catch it would drop. Missing blobs are reported while planning.
