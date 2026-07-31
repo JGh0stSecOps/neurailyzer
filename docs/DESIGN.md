@@ -120,6 +120,6 @@ A configurable allow-list of paths / collections / memory keys that are **never*
 ## 12. Open decisions
 
 Tracked in issues; the live ones from design:
-1. **Trigger model** — manual / end-of-task / scheduled — which ships first? (Leaning: CLI + MCP first, scheduler later.)
-2. **Snapshot store** — filesystem CAS vs. a small sqlite index + blobs. (Leaning: sqlite index + content-addressed blobs.)
-3. **Adapter priority** — which hosted + local adapters ship in v1 vs. community-contributed later.
+1. **Trigger model** — manual / end-of-task / scheduled — which ships first? (Decided for v0.1: CLI + MCP shipped; scheduler later.)
+2. **Snapshot store** — ~~filesystem CAS vs. sqlite index~~ **decided & shipped:** content-addressed blobs + one JSON manifest per snapshot (diffable, no extra dependency; a sqlite index can be added later if listing ever gets slow).
+3. **Adapter priority** — file-tree adapters (`session`, `sandbox`) shipped first; which `rag` / `models` / `remote` adapters ship next vs. community-contributed is open.

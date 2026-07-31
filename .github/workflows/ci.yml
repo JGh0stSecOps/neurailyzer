@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -e ".[dev]"
+      - run: pip install -e ".[dev,mcp]"
       - name: ruff (lint)
         run: ruff check .
       - name: ruff (format)
@@ -31,16 +31,20 @@ jobs:
         run: mypy
 
   test:
-    runs-on: ubuntu-latest
+    # full OS matrix: the wipers touch the filesystem, so every platform's
+    # quirks (read-only attrs, symlink privileges, path separators) run for real
     strategy:
+      fail-fast: false
       matrix:
-        python: ["3.11", "3.12"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - run: pip install -e ".[dev]"
-      - name: pytest
+      - run: pip install -e ".[dev,mcp]"
+      - name: pytest (unit + e2e smoke)
         run: pytest
