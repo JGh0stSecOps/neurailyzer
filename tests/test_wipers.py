@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -83,3 +84,35 @@ def test_single_file_root(tmp_path: Path) -> None:
     w.commit()
     assert not f.exists()
     assert w.verify()
+
+
+def test_an_unreadable_subtree_fails_verification(tmp_path: Path) -> None:
+    """A directory we cannot read may still hold the files the user asked to
+    destroy. Reporting 'verified' there is a false assurance of deletion --
+    for a privacy tool, the worst possible lie."""
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    target = tmp_path / "state"
+    locked = target / "locked"
+    locked.mkdir(parents=True)
+    (locked / "secret.txt").write_text("still here")
+    (target / "open.txt").write_text("wipe me")
+    locked.chmod(0o000)
+
+    wiper = PathWiper("session", (target,), KeepList())
+    try:
+        result = wiper.commit()
+        assert not wiper.verify(), "claimed success over an unreadable subtree"
+        assert result.complete is False
+        assert any("UNREADABLE" in n for n in result.notes)
+    finally:
+        locked.chmod(0o700)
+    assert (locked / "secret.txt").exists()  # it really did survive
+    assert not (target / "open.txt").exists()  # the readable part was wiped
+
+
+def test_a_fully_readable_wipe_is_still_complete(state: dict[str, Path]) -> None:
+    wiper = _wiper(state)
+    result = wiper.commit()
+    assert result.complete is True
+    assert wiper.verify()

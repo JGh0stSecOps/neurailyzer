@@ -293,8 +293,17 @@ def wipe(
     console.print(f"[red]COMMIT[/red] wipe: [bold]{label}[/bold]")
     _print_plans(list(report.plans), scopes)
     bad = [s for s, ok in report.verified.items() if not ok]
+    incomplete = [p.scope for p in report.plans if not p.complete]
+    if incomplete:
+        err_console.print(
+            f"[red]INCOMPLETE[/red] for: {', '.join(sorted(set(incomplete)))} -- "
+            "part of the target could not be read or enumerated, so state you "
+            "asked to remove may still exist. See the notes above."
+        )
     if bad:
         err_console.print(f"[red]verify FAILED[/red] for: {', '.join(bad)}")
+        raise typer.Exit(code=1)
+    if incomplete:
         raise typer.Exit(code=1)
     console.print("[green]verified[/green] -- state matches the plan.")
 

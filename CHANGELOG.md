@@ -37,6 +37,16 @@ vacuously:
 - **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
   file outside the target tree. It now refuses rather than following.
 
+### Fixed — a wipe that could not read everything now says so
+- **An unreadable subtree made a wipe silently partial while `verify()`
+  returned True.** `os.walk` swallows permission errors by default, so a
+  locked directory vanished from the plan *and* from the verification — the
+  tool reported "state matches the plan" while the files the user asked to
+  destroy were still on disk. For a privacy tool that false assurance of
+  deletion is the worst possible failure. Walk errors are now collected,
+  reported as `UNREADABLE` notes, mark the plan `complete: false`, and make
+  `verify()` return False (exit code 1).
+
 ### Fixed — the restore path is the safety net, so it must not be brittle
 - **One truncated manifest made every snapshot in the store unreachable.**
   `list()` raised, so `snapshot --list`, `restore` and pruning all failed —
