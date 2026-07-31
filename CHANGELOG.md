@@ -6,6 +6,33 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — remote wiper hardening
+An adversarial review pass over the remote wipers found eleven defects; all
+are fixed with a regression test each:
+- **`verify()` could not tell "clean" from "we never managed to look"** — a
+  failed wipe reported green. Enumeration now carries a `complete` flag, and
+  `verify()` is true only if the listing succeeded *and* nothing is left.
+- **MCP agents could irreversibly wipe every provider object.** The gate only
+  blocked the literal string `all`, so `nl_wipe(scopes=["remote"],
+  commit=true)` sailed through. Remote commits are now CLI-only (planning
+  over MCP still works).
+- **The snapshot manifest recorded no IDs** while three places said it did.
+  `WipePlan` now carries `item_ids`, and they reach the manifest — for an
+  irreversible delete, that record *is* the restore point.
+- **Pagination truncated silently at 10,000 objects** and looped up to 100
+  times against providers that ignore the cursor. It now detects a stalled
+  cursor, refuses to wipe a partially-enumerated surface, and reports both.
+- **A network error mid-delete aborted the run** after objects were already
+  destroyed, with no report. Each delete is now guarded and counted.
+- **A token with a trailing newline** (`export K=$(cat key.txt)`) raised
+  inside http.client with the key in the traceback. Tokens are stripped, and
+  a whitespace-only value counts as absent.
+- **Provider-supplied IDs were interpolated into the DELETE URL unencoded**,
+  letting a response reshape the path. They are percent-encoded now.
+- **A non-JSON 200 response crashed even the dry-run.**
+- **`list-state` reported the irreversible remote scope as "0 files"** — it
+  makes no network call, so it now prints `?` for "not counted".
+
 ### Added — harness presets, remote wipers, liveness guard
 - **Harness presets** (`neurailyzer detect [--enable]`): `claude-code`,
   `codex`, `hermes`, `scion`, `venice-web`. Each contributes session/sandbox

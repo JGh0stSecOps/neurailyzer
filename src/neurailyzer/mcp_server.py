@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, core
-from .config import FILE_SCOPES, PENDING_SCOPES, load
+from .config import FILE_SCOPES, PENDING_SCOPES, REMOTE_SCOPE, load
 from .snapshots import SnapshotError, SnapshotStore
 
 
@@ -82,7 +82,8 @@ def build_server(config_path: str | None = None) -> Any:
         description=(
             "Reset state at the given scopes (session, sandbox, ...). Dry-run "
             "unless commit=true; a snapshot is taken before any commit. "
-            "'all' is CLI-only."
+            "Scopes 'all' and 'remote' can only be COMMITTED by a human at "
+            "the CLI -- ask over MCP with commit=false to see their plan."
         )
     )
     def nl_wipe(scopes: list[str], commit: bool = False) -> dict[str, Any]:
@@ -91,6 +92,16 @@ def build_server(config_path: str | None = None) -> Any:
                 "ok": False,
                 "reason": "scope 'all' is refused over MCP -- a factory reset "
                 "requires a human at the CLI (--confirm all).",
+            }
+        # Local wipes are snapshot-protected and therefore reversible; remote
+        # deletes are NOT. An agent may plan one, but only a human commits it.
+        if commit and REMOTE_SCOPE in core.expand_scopes(scopes):
+            return {
+                "ok": False,
+                "reason": "scope 'remote' cannot be committed over MCP: provider "
+                "deletions are irreversible, so no snapshot can undo them. Run "
+                "`neurailyzer wipe remote --commit` yourself. (commit=false to "
+                "see the plan.)",
             }
         cfg = load(config_path)
         scopes = core.expand_scopes(scopes)
@@ -153,6 +164,8 @@ def _plan_dict(p: Any) -> dict[str, Any]:
         "items": p.item_count,
         "bytes": p.bytes_total,
         "reversible": p.reversible,
+        "complete": p.complete,
+        "item_ids": list(p.item_ids),
         "notes": list(p.notes),
     }
 

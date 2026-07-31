@@ -32,6 +32,7 @@ import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 from .base import WipePlan, Wiper
 
@@ -47,7 +48,13 @@ def http_json(method: str, url: str, headers: dict[str, str]) -> tuple[int, dict
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read()
-            return resp.status, json.loads(body) if body else {}
+            if not body:
+                return resp.status, {}
+            try:
+                return resp.status, json.loads(body)
+            except json.JSONDecodeError as exc:
+                # a 200 that isn't JSON means we do not understand this API
+                raise RuntimeError(f"{url}: HTTP {resp.status} body was not JSON ({exc})") from exc
     except urllib.error.HTTPError as exc:
         body = exc.read()
         try:
@@ -65,6 +72,7 @@ class Surface:
     list_path: str  # GET, paginated
     delete_path: str  # DELETE, with {id}
     cursor_param: str = "after"  # provider's pagination param, fed the last id
+    more_key: str = "has_more"  # truthy field meaning "another page exists"
     data_key: str = "data"
     id_key: str = "id"
     notes: str = ""
@@ -158,8 +166,32 @@ PROVIDERS: dict[str, Provider] = {
 }
 
 
+@dataclass
+class Enumeration:
+    """What a listing pass found -- and whether it could look at all.
+
+    The distinction matters: "there is nothing there" and "we never managed
+    to ask" must never render the same, or a failed wipe reports success.
+    """
+
+    found: dict[str, list[str]] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    complete: bool = True  # every requested surface was listed end to end
+
+    @property
+    def total(self) -> int:
+        return sum(len(v) for v in self.found.values())
+
+    @property
+    def all_ids(self) -> list[str]:
+        return [f"{surface}:{i}" for surface, ids in self.found.items() for i in ids]
+
+
 class RemoteWiper(Wiper):
     """Wipes enumerable stored objects at one provider, surface by surface."""
+
+    #: hard bound on pages per surface; hitting it is reported, never silent.
+    MAX_PAGES = 100
 
     def __init__(self, provider: Provider, surfaces: Sequence[str]) -> None:
         self.scope = "remote"
@@ -169,7 +201,14 @@ class RemoteWiper(Wiper):
     # -- plumbing -------------------------------------------------------------
 
     def _token(self) -> str | None:
-        return os.environ.get(self.provider.token_env) or None
+        raw = os.environ.get(self.provider.token_env)
+        if raw is None:
+            return None
+        # Keys arrive with stray whitespace all the time -- `export K=$(cat
+        # key.txt)`, a .env line, a paste. A newline in a header value raises
+        # deep in http.client, and the traceback carries the key.
+        token = raw.strip()
+        return token or None
 
     def _headers(self) -> dict[str, str]:
         token = self._token() or ""
@@ -179,77 +218,129 @@ class RemoteWiper(Wiper):
             **self.provider.extra_headers,
         }
 
-    def _list_ids(self, surface: Surface) -> list[str]:
+    def _list_ids(self, surface: Surface) -> tuple[list[str], list[str]]:
+        """(ids, notes). Raises RuntimeError if the listing cannot be trusted."""
         ids: list[str] = []
+        notes: list[str] = []
+        seen: set[str] = set()
         url = f"{self.provider.base_url}{surface.list_path}"
-        for _ in range(100):  # pagination bound, not a hot loop
+        for page in range(self.MAX_PAGES):
             status, payload = http_json("GET", url, self._headers())
             if status != 200:
                 raise RuntimeError(
                     f"{self.provider.id}/{surface.name}: list failed with HTTP {status}"
                 )
             data = payload.get(surface.data_key, [])
-            ids.extend(str(item[surface.id_key]) for item in data)
-            if not payload.get("has_more") or not data:
-                break
+            if not isinstance(data, list):
+                raise RuntimeError(
+                    f"{self.provider.id}/{surface.name}: {surface.data_key!r} was not a list"
+                )
+            page_ids = [str(item[surface.id_key]) for item in data]
+            fresh = [i for i in page_ids if i not in seen]
+            ids.extend(fresh)
+            seen.update(fresh)
+            if not data or not payload.get(surface.more_key):
+                return ids, notes
+            if not fresh:
+                # the cursor did not advance: paginating again would loop
+                notes.append(
+                    f"{self.provider.id}/{surface.name}: pagination stopped -- "
+                    f"page {page + 2} repeated ids already seen"
+                )
+                return ids, notes
             sep = "&" if "?" in surface.list_path else "?"
-            last = data[-1][surface.id_key]
-            url = f"{self.provider.base_url}{surface.list_path}{sep}{surface.cursor_param}={last}"
-        return ids
+            cursor = quote(str(data[-1][surface.id_key]), safe="")
+            url = f"{self.provider.base_url}{surface.list_path}{sep}{surface.cursor_param}={cursor}"
+        raise RuntimeError(
+            f"{self.provider.id}/{surface.name}: more than "
+            f"{self.MAX_PAGES} pages of results -- refusing to wipe a "
+            "partially-enumerated surface"
+        )
 
-    def _enumerate(self) -> tuple[dict[str, list[str]], list[str]]:
-        """(surface -> ids, notes). Missing token or list errors become notes."""
-        notes: list[str] = []
-        found: dict[str, list[str]] = {}
+    def _enumerate(self) -> Enumeration:
+        """List every configured surface. Failures are reported, not hidden."""
+        out = Enumeration()
         if not self._token():
-            notes.append(f"{self.provider.id}: {self.provider.token_env} not set -- skipped")
-            return found, notes
+            out.notes.append(f"{self.provider.id}: {self.provider.token_env} not set -- skipped")
+            out.complete = False
+            return out
         for name in self.surface_names:
             surface = self.provider.surfaces[name]
             try:
-                found[name] = self._list_ids(surface)
-            except (RuntimeError, OSError, KeyError, TypeError) as exc:
-                notes.append(f"{self.provider.id}/{name}: {exc}")
-        return found, notes
+                ids, notes = self._list_ids(surface)
+            except (RuntimeError, OSError, KeyError, TypeError, ValueError) as exc:
+                out.notes.append(f"{self.provider.id}/{name}: {exc}")
+                out.complete = False
+                continue
+            out.found[name] = ids
+            out.notes.extend(notes)
+            if notes:  # a truncated listing is not a complete one
+                out.complete = False
+        return out
 
     # -- Wiper contract -------------------------------------------------------
 
     def plan(self) -> WipePlan:
-        found, notes = self._enumerate()
-        total = sum(len(v) for v in found.values())
-        detail = ", ".join(f"{k}: {len(v)}" for k, v in found.items()) or "nothing listed"
+        enum = self._enumerate()
+        detail = ", ".join(f"{k}: {len(v)}" for k, v in enum.found.items()) or "nothing listed"
+        notes = [
+            f"{self.provider.id}: remote deletions are NOT restorable "
+            "(the snapshot records ids only)",
+            *enum.notes,
+        ]
+        if not enum.complete:
+            notes.append(
+                f"{self.provider.id}: this listing is INCOMPLETE -- a wipe would "
+                "not cover everything, and cannot be verified"
+            )
         return WipePlan(
             scope="remote",
-            description=f"[{self.provider.id}] delete {total} object(s) ({detail})",
-            item_count=total,
+            description=f"[{self.provider.id}] delete {enum.total} object(s) ({detail})",
+            item_count=enum.total,
             reversible=False,
-            notes=(
-                f"{self.provider.id}: remote deletions are NOT restorable "
-                "(the snapshot records IDs only)",
-                *notes,
-            ),
+            complete=enum.complete,
+            item_ids=tuple(enum.all_ids),
+            notes=tuple(notes),
         )
 
     def commit(self) -> WipePlan:
-        found, notes = self._enumerate()
-        deleted = 0
-        for name, ids in found.items():
+        enum = self._enumerate()
+        notes = list(enum.notes)
+        deleted: list[str] = []
+        for name, ids in enum.found.items():
             surface = self.provider.surfaces[name]
             for obj_id in ids:
-                url = f"{self.provider.base_url}{surface.delete_path.format(id=obj_id)}"
-                status, payload = http_json("DELETE", url, self._headers())
+                # the id came from a remote response: encode it, never let it
+                # reshape the URL path
+                safe_id = quote(obj_id, safe="")
+                url = f"{self.provider.base_url}{surface.delete_path.format(id=safe_id)}"
+                try:
+                    status, _payload = http_json("DELETE", url, self._headers())
+                except (OSError, ValueError) as exc:  # network died mid-run
+                    notes.append(f"{self.provider.id}/{name}: delete {obj_id} failed: {exc}")
+                    continue
                 if status in (200, 202, 204):
-                    deleted += 1
+                    deleted.append(f"{name}:{obj_id}")
                 else:
                     notes.append(f"{self.provider.id}/{name}: delete {obj_id} -> HTTP {status}")
+        failed = enum.total - len(deleted)
+        if failed:
+            notes.append(f"{self.provider.id}: {failed} object(s) could NOT be deleted")
         return WipePlan(
             scope="remote",
-            description=f"[{self.provider.id}] deleted {deleted} object(s)",
-            item_count=deleted,
+            description=f"[{self.provider.id}] deleted {len(deleted)} of {enum.total} object(s)",
+            item_count=len(deleted),
             reversible=False,
+            complete=enum.complete and not failed,
+            item_ids=tuple(deleted),
             notes=tuple(notes),
         )
 
     def verify(self) -> bool:
-        found, _notes = self._enumerate()
-        return sum(len(v) for v in found.values()) == 0
+        """True only if we could look AND nothing is left.
+
+        An enumeration that failed must never read as "clean" -- that would
+        turn a broken wipe into a green report.
+        """
+        enum = self._enumerate()
+        return enum.complete and enum.total == 0

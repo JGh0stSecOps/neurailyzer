@@ -200,3 +200,155 @@ def test_remote_status_lists_providers(tmp_path: Path) -> None:
     st = core.scope_status(cfg, "remote")
     assert st.configured and st.available
     assert st.roots == ("openai: files",)
+
+
+# -- hardening: every case below is a defect an adversarial review found ----
+
+
+def test_verify_is_false_when_enumeration_failed(
+    monkeypatch: pytest.MonkeyPatch, openai_key: None
+) -> None:
+    """'We could not look' must never render as 'it is clean'."""
+    monkeypatch.setattr(remote_mod, "http_json", lambda *a, **k: (500, {"error": "boom"}))
+    wiper = RemoteWiper(PROVIDERS["openai"], ["files"])
+    assert not wiper.verify(), "a failed listing reported the wipe as verified"
+    plan = wiper.plan()
+    assert plan.complete is False
+    assert any("INCOMPLETE" in n for n in plan.notes)
+
+
+def test_verify_false_without_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert not RemoteWiper(PROVIDERS["openai"], ["files"]).verify()
+
+
+def test_plan_records_the_actual_ids(monkeypatch: pytest.MonkeyPatch, openai_key: None) -> None:
+    """The ids ARE the restore point: the delete cannot be undone."""
+    api = FakeApi({"files": ["file-a", "file-b"]})
+    monkeypatch.setattr(remote_mod, "http_json", api)
+    plan = RemoteWiper(PROVIDERS["openai"], ["files"]).plan()
+    assert set(plan.item_ids) == {"files:file-a", "files:file-b"}
+
+
+def test_snapshot_manifest_carries_the_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, openai_key: None
+) -> None:
+    from neurailyzer.snapshots import SnapshotStore
+
+    api = FakeApi({"files": ["file-keepsake"]})
+    monkeypatch.setattr(remote_mod, "http_json", api)
+    cfg = load(_cfg(tmp_path, '[remote.openai]\nsurfaces = ["files"]'))
+    report = core.execute_wipe(cfg, ["remote"])
+    assert report.snapshot is not None
+    stored = SnapshotStore(cfg.snapshot_dir).list()[-1]
+    assert stored.remote_manifest is not None
+    assert "files:file-keepsake" in stored.remote_manifest["openai"]["item_ids"]
+
+
+def test_pagination_that_never_advances_is_reported_not_looped(
+    monkeypatch: pytest.MonkeyPatch, openai_key: None
+) -> None:
+    """A provider that ignores the cursor must not spin 100 times."""
+    calls = 0
+
+    def _stuck(_m: str, _u: str, _h: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        return 200, {"data": [{"id": "same-id"}], "has_more": True}
+
+    monkeypatch.setattr(remote_mod, "http_json", _stuck)
+    plan = RemoteWiper(PROVIDERS["openai"], ["files"]).plan()
+    assert calls == 2, f"cursor stall not detected (made {calls} requests)"
+    assert plan.complete is False
+    assert any("pagination stopped" in n for n in plan.notes)
+
+
+def test_exceeding_the_page_cap_refuses_rather_than_truncates(
+    monkeypatch: pytest.MonkeyPatch, openai_key: None
+) -> None:
+    """Silently wiping a partially-enumerated surface is the worst outcome."""
+    counter = {"n": 0}
+
+    def _endless(_m: str, _u: str, _h: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        counter["n"] += 1
+        return 200, {"data": [{"id": f"id-{counter['n']}"}], "has_more": True}
+
+    monkeypatch.setattr(remote_mod, "http_json", _endless)
+    plan = RemoteWiper(PROVIDERS["openai"], ["files"]).plan()
+    assert plan.complete is False
+    assert any("refusing to wipe a partially-enumerated" in n for n in plan.notes)
+
+
+def test_token_with_trailing_newline_is_stripped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`export K=$(cat key.txt)` is common; a raw newline in a header raises
+    deep in http.client and the traceback carries the key."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key\n")
+    api = FakeApi({"files": []})
+    monkeypatch.setattr(remote_mod, "http_json", api)
+    RemoteWiper(PROVIDERS["openai"], ["files"]).plan()
+    _m, _u, headers = api.calls[0]
+    assert headers["Authorization"] == "Bearer sk-real-key"
+    assert "\n" not in headers["Authorization"]
+
+
+def test_whitespace_only_token_counts_as_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "   ")
+    plan = RemoteWiper(PROVIDERS["openai"], ["files"]).plan()
+    assert any("not set" in n for n in plan.notes)
+
+
+def test_hostile_id_cannot_reshape_the_delete_url(
+    monkeypatch: pytest.MonkeyPatch, openai_key: None
+) -> None:
+    """The id comes from the remote response -- it must not choose the path."""
+    api = FakeApi({"files": ["../vector_stores/vs_production"]})
+    monkeypatch.setattr(remote_mod, "http_json", api)
+    RemoteWiper(PROVIDERS["openai"], ["files"]).commit()
+    deletes = [u for m, u, _h in api.calls if m == "DELETE"]
+    assert deletes, "no delete was attempted"
+    assert all("/v1/vector_stores/" not in u for u in deletes), deletes
+    assert all("%2F" in u or "/v1/files/" in u for u in deletes)
+
+
+def test_network_error_mid_delete_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch, openai_key: None
+) -> None:
+    state = {"n": 0}
+    objects = ["file-a", "file-b", "file-c"]
+
+    def _flaky(method: str, url: str, headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        if method == "GET":
+            return 200, {"data": [{"id": i} for i in objects], "has_more": False}
+        state["n"] += 1
+        if state["n"] == 2:
+            raise OSError("connection reset")
+        return 200, {"deleted": True}
+
+    monkeypatch.setattr(remote_mod, "http_json", _flaky)
+    result = RemoteWiper(PROVIDERS["openai"], ["files"]).commit()
+    assert result.item_count == 2  # the other two still went through
+    assert any("connection reset" in n for n in result.notes)
+    assert any("could NOT be deleted" in n for n in result.notes)
+    assert result.complete is False
+
+
+def test_non_json_success_body_is_a_note_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, openai_key: None
+) -> None:
+    monkeypatch.setattr(
+        remote_mod,
+        "http_json",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("body was not JSON")),
+    )
+    plan = RemoteWiper(PROVIDERS["openai"], ["files"]).plan()  # must not raise
+    assert plan.complete is False
+
+
+def test_list_state_does_not_claim_zero_for_remote(tmp_path: Path) -> None:
+    """Reporting 0 would read as 'nothing to lose' for an irreversible scope."""
+    cfg = load(_cfg(tmp_path, '[remote.openai]\nsurfaces = ["files"]'))
+    st = core.scope_status(cfg, "remote")
+    assert not st.counted
+    assert st.file_count == -1

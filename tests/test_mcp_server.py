@@ -66,3 +66,33 @@ def test_nl_snapshot_then_nl_restore_round_trip(state: dict[str, Path]) -> None:
     out = _call(server, "nl_restore", {"to": took["id"], "commit": True})
     assert out["ok"] is True
     assert (state["sandbox"] / "notes.txt").read_text() == "scratch note"
+
+
+def test_nl_wipe_refuses_to_commit_remote_over_mcp(state: dict[str, Path]) -> None:
+    """Local wipes are snapshot-protected; remote deletes are irreversible.
+
+    An agent may look at the plan, but only a human commits a delete that no
+    snapshot can undo.
+    """
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[remote.openai]\nsurfaces = ["files"]\n')
+    server = build_server(str(cfg))
+    out = _call(server, "nl_wipe", {"scopes": ["remote"], "commit": True})
+    assert out["ok"] is False
+    assert "irreversible" in out["reason"]
+
+
+def test_nl_wipe_allows_planning_remote_over_mcp(state: dict[str, Path]) -> None:
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[remote.openai]\nsurfaces = ["files"]\n')
+    server = build_server(str(cfg))
+    out = _call(server, "nl_wipe", {"scopes": ["remote"], "commit": False})
+    assert out["ok"] is True
+    assert out["dry_run"] is True
+
+
+def test_nl_wipe_refuses_remote_hidden_inside_all(state: dict[str, Path]) -> None:
+    """'all' expands to include remote -- the gate must catch that too."""
+    server = build_server(str(state["config"]))
+    out = _call(server, "nl_wipe", {"scopes": ["all"], "commit": True})
+    assert out["ok"] is False

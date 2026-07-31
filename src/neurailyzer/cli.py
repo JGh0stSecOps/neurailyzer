@@ -101,15 +101,21 @@ def list_state(
             status = "[yellow]not configured[/yellow]"
         else:
             status = "[green]ready[/green]"
+        shown = st.configured and st.available and st.counted
         table.add_row(
             s.value,
             status,
             "\n".join(st.roots) or "--",
-            str(st.file_count) if st.configured and st.available else "--",
-            str(st.total_bytes) if st.configured and st.available else "--",
-            str(st.kept_count) if st.configured and st.available else "--",
+            str(st.file_count) if shown else "?" if st.configured else "--",
+            str(st.total_bytes) if shown else "?" if st.configured else "--",
+            str(st.kept_count) if shown else "--",
         )
     console.print(table)
+    if cfg.remote:
+        console.print(
+            "[dim]remote: '?' means not counted -- list-state makes no network "
+            "call. Run `neurailyzer wipe remote` for a real plan.[/dim]"
+        )
     if cfg.source is None:
         console.print("[dim]no config file found -- nothing is targeted. see README Config.[/dim]")
 
