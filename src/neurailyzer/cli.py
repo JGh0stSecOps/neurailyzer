@@ -32,7 +32,13 @@ from .wipers.base import WipePlan
 
 app = typer.Typer(
     name="neurailyzer",
-    help="Wipe the drift, restore to a point in time.",
+    help=(
+        "Wipe the drift, restore to a point in time.\n\n"
+        "Exit codes: 0 ok · 1 the operation ran but did not fully succeed "
+        "(nothing to restore, verify failed) · 2 refused before doing "
+        "anything (bad config, missing confirmation) · 3 refused because a "
+        "targeted harness looks like it is running (--force overrides)."
+    ),
     no_args_is_help=True,
     add_completion=False,
 )
@@ -300,9 +306,18 @@ def _liveness_ok(
 ) -> bool:
     """Refuse (best-effort) to touch a live harness's session store."""
     from . import liveness
+    from . import presets as presets_mod
 
     roots = tuple(r for s in scopes for r in cfg.roots_for(s)) + extra_roots
-    live = liveness.check_enabled(list(cfg.presets), roots)
+    # blame a WAL sidecar on the harness that owns it, not on every preset
+    by_preset: dict[str, tuple[Path, ...]] = {}
+    for pid in cfg.presets:
+        preset = presets_mod.REGISTRY.get(pid)
+        if preset is None:
+            continue
+        owned = presets_mod.expand_existing((*preset.session, *preset.sandbox))
+        by_preset[pid] = tuple(r for r in owned if r in roots) or (owned if not roots else ())
+    live = liveness.check_enabled(list(cfg.presets), roots, by_preset)
     if not live:
         return True
     for entry in live:

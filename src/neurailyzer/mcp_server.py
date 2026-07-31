@@ -115,9 +115,21 @@ def build_server(config_path: str | None = None) -> Any:
         # An agent calling this mid-session is the case the liveness guard
         # exists for: the harness holding the store open is the very one
         # making the call.
-        live = liveness.check_enabled(
-            list(cfg.presets), tuple(r for s in scopes for r in cfg.roots_for(s))
-        )
+        from . import presets as presets_mod
+
+        scope_roots = tuple(r for s in scopes for r in cfg.roots_for(s))
+        by_preset = {
+            pid: tuple(
+                r
+                for r in presets_mod.expand_existing(
+                    (*presets_mod.REGISTRY[pid].session, *presets_mod.REGISTRY[pid].sandbox)
+                )
+                if r in scope_roots
+            )
+            for pid in cfg.presets
+            if pid in presets_mod.REGISTRY
+        }
+        live = liveness.check_enabled(list(cfg.presets), scope_roots, by_preset)
         if live and not force:
             return {
                 "ok": False,
