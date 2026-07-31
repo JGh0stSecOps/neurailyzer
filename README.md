@@ -110,7 +110,8 @@ Wiping is destructive, so the defaults are conservative — and tested end-to-en
 - **Snapshot before every commit** — wipes *and* restores — so any reset is reversible (`--no-snapshot` exists but shouts).
 - **Keep-list** entries are never touched, and every skip is reported.
 - **Symlinks are never followed.** A sandbox link aimed at your home directory removes the link, not your home.
-- **Config sanity guards** refuse targets like `/`, your home directory, or anything containing the snapshot store.
+- **Config sanity guards** refuse targets like `/`, your home directory, anything containing the snapshot store, or anything that *resolves into* Downloads/Documents/Desktop and friends — a harness path linked there is an accident, not a wipe request. Symlinked targets are reported in the plan so a redirected wipe is never a surprise.
+- **The keep-list matches how filesystems actually behave**: both spellings of a symlink, case-insensitively on macOS and Windows, and across unicode NFC/NFD. Each of those was a silent-failure path found by adversarial review and is now covered by a test that proves the protected file really is inside a wipe target.
 
 See [SECURITY.md](SECURITY.md).
 
