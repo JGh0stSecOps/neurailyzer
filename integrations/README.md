@@ -43,8 +43,10 @@ mcp_servers:
 ## Safety notes that apply everywhere
 
 - **`wipe`/`restore` are dry-run unless `commit=true`**, and a commit always
-  snapshots first. `scope=all` is refused over MCP: a factory reset is a human
-  decision at the CLI.
+  snapshots first.
+- **`scope=all` and `scope=remote` cannot be *committed* over MCP.** A factory
+  reset is a human decision, and remote deletes are irreversible — no snapshot
+  can undo them, so an agent may ask for the plan but not pull the trigger.
 - **Stop the harness before wiping its live session store.** Several keep
   their history in WAL-mode SQLite (Hermes `state.db`, Codex's `*.sqlite`),
   and wiping a database out from under a running writer risks a corrupt

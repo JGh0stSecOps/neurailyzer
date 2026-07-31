@@ -160,3 +160,45 @@ def test_pid_harness_does_not_fall_back_to_fuzzy_matching(
     monkeypatch.setattr(liveness, "PID_SOURCES", {"claude-code": ()})
     assert not liveness.check("claude-code", ()).likely_running
     assert not called, "pid-backed harness must not use command-line matching"
+
+
+def test_sidecar_is_blamed_on_the_owning_preset_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One sidecar under Codex's tree must not report Hermes as running --
+    naming a harness the user may not even have installed."""
+    monkeypatch.setattr(liveness, "_running_process_hits", lambda _f: [])
+    codex = tmp_path / "codex"
+    hermes = tmp_path / "hermes"
+    codex.mkdir()
+    hermes.mkdir()
+    (codex / "state_5.sqlite-wal").write_bytes(b"wal")
+
+    hits = liveness.check_enabled(
+        ["codex", "hermes"],
+        (codex, hermes),
+        {"codex": (codex,), "hermes": (hermes,)},
+    )
+    assert [h.preset_id for h in hits] == ["codex"]
+
+
+def test_hand_configured_targets_are_still_guarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scoping per preset must not leave [targets] paths unguarded."""
+    monkeypatch.setattr(liveness, "_running_process_hits", lambda _f: [])
+    mine = tmp_path / "my-agent"
+    mine.mkdir()
+    (mine / "chat.db-wal").write_bytes(b"wal")
+
+    hits = liveness.check_enabled(["codex"], (mine,), {"codex": ()})
+    assert [h.preset_id for h in hits] == [liveness.TARGETS_PSEUDO_PRESET]
+
+
+def test_sidecar_search_stops_at_the_limit(tmp_path: Path) -> None:
+    """A real ~/.claude is gigabytes; the walk must not stat all of it."""
+    root = tmp_path / "big"
+    root.mkdir()
+    for i in range(25):
+        (root / f"db{i}.sqlite-wal").write_bytes(b"wal")
+    assert len(liveness._open_wal_sidecars((root,), limit=5)) == 5

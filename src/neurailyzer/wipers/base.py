@@ -26,6 +26,12 @@ class WipePlan:
     item_count: int = 0
     bytes_total: int = 0
     reversible: bool = True
+    #: False when the wiper could not fully see its target -- a partial view
+    #: must never render the same as "nothing to do".
+    complete: bool = True
+    #: identifiers of the affected items, where they are the only record that
+    #: can be kept (remote objects: the delete is irreversible).
+    item_ids: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
 

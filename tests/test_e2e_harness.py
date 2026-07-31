@@ -166,8 +166,19 @@ def test_detect_enable_wipe_restore(harness_home: dict[str, Any]) -> None:
     assert not (hermes / "state.db").exists()
     assert not (hermes / "logs" / "run.log").exists()
 
-    # ... and everything that must survive, survived
-    assert (harness_home["proj"] / "memory" / "MEMORY.md").read_text() == "# durable index\n"
+    # ... and everything that must survive, survived.
+    #
+    # NOTE: only paths INSIDE a wipe target prove anything -- a file outside
+    # every root survives with no keep-list at all. `memory/` is the real
+    # test (it is nested inside the session target); the rest are regression
+    # checks that the wiper did not wander outside its roots.
+    memory = harness_home["proj"] / "memory" / "MEMORY.md"
+    # Proof this is not vacuous: a SIBLING in the very same directory was
+    # just deleted (asserted above), so the wiper demonstrably walked here
+    # and chose to skip memory/ -- it is not merely out of range.
+    assert not (harness_home["proj"] / "sess-1.jsonl").exists()
+    assert memory.parent.parent == harness_home["proj"]
+    assert memory.read_text() == "# durable index\n"
     assert (claude / "settings.json").exists()
     assert '"KEEP-ME"' in (claude / ".credentials.json").read_text()
     assert "KEEP-ME" in (codex / "auth.json").read_text()
@@ -187,18 +198,30 @@ def test_detect_enable_wipe_restore(harness_home: dict[str, Any]) -> None:
 
 @pytest.mark.e2e
 def test_liveness_guard_blocks_a_live_store(harness_home: dict[str, Any]) -> None:
+    """The SIDECAR must be what trips the guard.
+
+    Without stubbing the process scan this passes for the wrong reason: a
+    developer machine has dozens of processes whose command line contains
+    "claude", so exit 3 arrives no matter what the fixture seeds.
+    """
     env, cfg = harness_home["env"], harness_home["config"]
+    env = {**env, "NEURAILYZER_DISABLE_PROCESS_SCAN": "1"}
     assert run_cli(env, "detect", "--enable").returncode == 0
     cfg.write_text(
         cfg.read_text().rstrip("\n")
         + f'\n\n[snapshots]\ndir = "{harness_home["snapdir"].as_posix()}"\n'
     )
-    # a WAL sidecar means a writer is live (or died mid-write)
-    (harness_home["hermes"] / "state.db-wal").write_bytes(b"wal")
+    # with the process scan off, a clean tree must NOT be blocked
+    ok = run_cli(env, "wipe", "sandbox", "--commit")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
 
+    # now the only live signal is the sidecar
+    (harness_home["hermes"] / "state.db-wal").write_bytes(b"wal")
     r = run_cli(env, "wipe", "session", "--commit")
-    assert r.returncode == 3
-    assert "RUNNING" in (r.stdout + r.stderr)
+    assert r.returncode == 3, r.stdout + r.stderr
+    combined = r.stdout + r.stderr
+    assert "write-ahead" in combined, combined
+    assert "hermes" in combined, combined
     assert (harness_home["hermes"] / "state.db").exists()  # untouched
 
 

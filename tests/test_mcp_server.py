@@ -29,8 +29,9 @@ def test_all_four_verbs_registered(state: dict[str, Path]) -> None:
 
 def test_nl_list_state_reports_scopes(state: dict[str, Path]) -> None:
     server = build_server(str(state["config"]))
-    rows = _call(server, "nl_list_state", {})
-    by_scope = {r["scope"]: r for r in rows}
+    out = _call(server, "nl_list_state", {})
+    assert out["ok"] is True
+    by_scope = {r["scope"]: r for r in out["scopes"]}
     assert by_scope["session"]["configured"] is True
     assert by_scope["rag"]["adapter_available"] is False
 
@@ -66,3 +67,97 @@ def test_nl_snapshot_then_nl_restore_round_trip(state: dict[str, Path]) -> None:
     out = _call(server, "nl_restore", {"to": took["id"], "commit": True})
     assert out["ok"] is True
     assert (state["sandbox"] / "notes.txt").read_text() == "scratch note"
+
+
+def test_nl_wipe_refuses_to_commit_remote_over_mcp(state: dict[str, Path]) -> None:
+    """Local wipes are snapshot-protected; remote deletes are irreversible.
+
+    An agent may look at the plan, but only a human commits a delete that no
+    snapshot can undo.
+    """
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[remote.openai]\nsurfaces = ["files"]\n')
+    server = build_server(str(cfg))
+    out = _call(server, "nl_wipe", {"scopes": ["remote"], "commit": True})
+    assert out["ok"] is False
+    assert "irreversible" in out["reason"]
+
+
+def test_nl_wipe_allows_planning_remote_over_mcp(state: dict[str, Path]) -> None:
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[remote.openai]\nsurfaces = ["files"]\n')
+    server = build_server(str(cfg))
+    out = _call(server, "nl_wipe", {"scopes": ["remote"], "commit": False})
+    assert out["ok"] is True
+    assert out["dry_run"] is True
+
+
+def test_nl_wipe_refuses_remote_hidden_inside_all(state: dict[str, Path]) -> None:
+    """'all' expands to include remote -- the gate must catch that too."""
+    server = build_server(str(state["config"]))
+    out = _call(server, "nl_wipe", {"scopes": ["all"], "commit": True})
+    assert out["ok"] is False
+
+
+def test_nl_wipe_honors_the_liveness_guard(state: dict[str, Path]) -> None:
+    """MCP is the surface where an agent wipes MID-SESSION -- the harness
+    holding the store open is the one making the call, so this is the
+    guaranteed-live case, not an edge case."""
+    (state["sandbox"] / "state.db").write_bytes(b"SQLite format 3\x00")
+    (state["sandbox"] / "state.db-wal").write_bytes(b"wal")
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[presets]\nenabled = ["hermes"]\n')
+    server = build_server(str(cfg))
+    out = _call(server, "nl_wipe", {"scopes": ["sandbox"], "commit": True})
+    assert out["ok"] is False
+    assert "RUNNING" in out["reason"]
+    assert out["liveness"]
+    assert (state["sandbox"] / "notes.txt").exists()  # nothing was wiped
+
+
+def test_nl_wipe_force_overrides_the_liveness_guard(state: dict[str, Path]) -> None:
+    (state["sandbox"] / "state.db-wal").write_bytes(b"wal")
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[presets]\nenabled = ["hermes"]\n')
+    server = build_server(str(cfg))
+    out = _call(server, "nl_wipe", {"scopes": ["sandbox"], "commit": True, "force": True})
+    assert out["ok"] is True
+    assert not (state["sandbox"] / "notes.txt").exists()
+
+
+def test_nl_list_state_shows_the_remote_scope(state: dict[str, Path]) -> None:
+    """An agent that cannot see the scope can still name it -- and it is the
+    one whose deletes nothing can undo."""
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[remote.openai]\nsurfaces = ["files"]\n')
+    out = _call(build_server(str(cfg)), "nl_list_state", {})
+    by_scope = {r["scope"]: r for r in out["scopes"]}
+    assert "remote" in by_scope
+    assert by_scope["remote"]["irreversible"] is True
+    assert by_scope["remote"]["counted"] is False  # no network call was made
+    assert by_scope["session"]["irreversible"] is False
+
+
+def test_a_broken_config_is_a_refusal_not_a_traceback(tmp_path: Path) -> None:
+    """An agent can act on {ok: false, reason}; it cannot act on a stack
+    trace surfaced as a tool error."""
+    missing = tmp_path / "nope" / "config.toml"
+    server = build_server(str(missing))
+    for tool, args in (
+        ("nl_list_state", {}),
+        ("nl_snapshot", {}),
+        ("nl_wipe", {"scopes": ["session"]}),
+        ("nl_restore", {"to": "2026-01-01T00:00"}),
+    ):
+        out = _call(server, tool, args)
+        assert out["ok"] is False, tool
+        assert "config" in out["reason"].lower(), tool
+        assert "hint" in out, tool
+
+
+def test_an_invalid_config_is_also_a_refusal(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.toml"
+    bad.write_text('[targets.rag]\npaths = ["/x"]\n')
+    out = _call(build_server(str(bad)), "nl_list_state", {})
+    assert out["ok"] is False
+    assert "no adapter" in out["reason"]

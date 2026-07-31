@@ -16,13 +16,16 @@ every command stays a safe no-op until the user opts state in.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import glob as globmod
 import os
+import sys
 import tomllib
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 #: scopes that have a working adapter in this release (file-tree state).
 FILE_SCOPES: tuple[str, ...] = ("session", "sandbox")
@@ -47,6 +50,21 @@ def _expand(raw: str) -> Path:
     return Path(os.path.expandvars(raw)).expanduser().resolve()
 
 
+#: Directories nobody means to hand to a wiper. A harness path that RESOLVES
+#: into one of these is almost always an accident -- `~/.claude/downloads ->
+#: ~/Downloads` is a natural thing to set up and a catastrophic thing to wipe.
+_PRECIOUS_HOME_DIRS: tuple[str, ...] = (
+    "Downloads",
+    "Documents",
+    "Desktop",
+    "Pictures",
+    "Music",
+    "Movies",
+    "Videos",
+    "Public",
+)
+
+
 def _forbidden_target_reason(path: Path) -> str | None:
     """A target this broad is a config mistake, not a wipe request."""
     home = Path.home().resolve()
@@ -56,20 +74,90 @@ def _forbidden_target_reason(path: Path) -> str | None:
         return "is your home directory"
     if path in home.parents:
         return "contains your home directory"
+    for name in _PRECIOUS_HOME_DIRS:
+        candidate = home / name
+        if path == candidate or candidate in path.parents:
+            return (
+                f"resolves inside {candidate} -- if a harness path links there, "
+                "wipe the harness's own directory instead"
+            )
     return None
+
+
+#: Windows and (by default) macOS match filenames case-insensitively. NOTE:
+#: os.path.normcase is a NO-OP on POSIX -- including macOS -- so relying on it
+#: alone would leave macOS keep-lists case-sensitive and silently voidable.
+_FOLD_CASE = sys.platform in ("win32", "darwin")
+
+
+def _norm(path: Path | str) -> str:
+    """Comparison key: case-folded where the filesystem is, NFC-normalized.
+
+    `Path.resolve()` does NOT canonicalize case, so a keep entry spelled
+    `~/projects` must still protect on-disk `~/Projects`. macOS also hands
+    back NFD from the filesystem while a config file usually carries NFC.
+    """
+    text = unicodedata.normalize("NFC", str(path))
+    text = os.path.normcase(text)  # also flips \\ to / on Windows
+    return text.casefold() if _FOLD_CASE else text
+
+
+def _spellings(path: Path) -> tuple[str, ...]:
+    """Every way this path can legitimately be written: as given, and resolved.
+
+    A keep entry may be a symlink whose destination is what the walker sees,
+    or the reverse -- comparing only one spelling silently voids protection.
+    """
+    keys = {_norm(path)}
+    with contextlib.suppress(OSError, RuntimeError):  # broken link / resolve loop
+        keys.add(_norm(path.resolve()))
+    return tuple(keys)
+
+
+def _resolve_pattern(pattern: str) -> tuple[str, ...]:
+    """A glob pattern, plus the same pattern with its literal prefix resolved.
+
+    Targets are stored resolved, so an unresolved pattern can never match
+    when the harness dir is a symlink (stow/chezmoi put ``~/.claude`` in a
+    dotfiles repo). Only the non-glob prefix is resolvable.
+    """
+    out = {pattern}
+    parts = PurePosixPath(pattern).parts
+    literal = []
+    for part in parts:
+        if any(c in part for c in "*?["):
+            break
+        literal.append(part)
+    if literal and len(literal) < len(parts):
+        prefix = Path(*literal)
+        try:
+            resolved = prefix.resolve()
+        except (OSError, RuntimeError):
+            return tuple(out)
+        rest = parts[len(literal) :]
+        out.add((resolved.joinpath(*rest)).as_posix())
+    return tuple(out)
 
 
 def _pattern_hits(path: Path, pattern: str) -> bool:
     """True if *path* or any ancestor matches the (absolute) glob *pattern*."""
+    pat = _norm(pattern)
     for candidate in (path, *path.parents):
-        if fnmatch.fnmatchcase(candidate.as_posix(), pattern):
-            return True
+        for spelling in _spellings(candidate):
+            if fnmatch.fnmatch(spelling, pat):
+                return True
     return False
 
 
 @dataclass(frozen=True)
 class KeepList:
-    """State that is NEVER wiped, no matter the scope."""
+    """State that is NEVER wiped, no matter the scope.
+
+    Matching is deliberately generous: a path is protected if EITHER its
+    literal spelling or its resolved spelling matches a keep entry in either
+    of ITS spellings, compared case-insensitively where the filesystem is.
+    Every near-miss here is silent data loss, so the bias is toward keeping.
+    """
 
     paths: tuple[Path, ...] = ()
     #: absolute glob patterns (POSIX separators), e.g. ``~/.claude/projects/*/memory``
@@ -79,15 +167,28 @@ class KeepList:
     collections: tuple[str, ...] = ()
     memory_keys: tuple[str, ...] = ()
 
+    def _keys(self) -> set[str]:
+        return {k for p in self.paths for k in _spellings(p)}
+
     def protects(self, path: Path) -> bool:
-        """True if *path* is a keep-list entry, lives under one, or matches a pattern."""
-        if any(path == p or p in path.parents for p in self.paths):
-            return True
+        """True if *path* is a keep entry, lives under one, or matches a pattern."""
+        keys = self._keys()
+        for candidate in (path, *path.parents):
+            if keys.intersection(_spellings(candidate)):
+                return True
         return any(_pattern_hits(path, pat) for pat in self.patterns)
 
     def shelters(self, path: Path) -> bool:
-        """True if *path* contains a keep-list entry (so it can't be removed)."""
-        return any(path == p or path in p.parents for p in self.paths)
+        """True if *path* contains a keep entry (so it can't be removed)."""
+        here = set(_spellings(path))
+        for kept in self.paths:
+            for spelling in _spellings(kept):
+                if spelling in here:
+                    return True
+                for parent in Path(spelling).parents:
+                    if _norm(parent) in here:
+                        return True
+        return False
 
 
 @dataclass(frozen=True)
@@ -101,6 +202,9 @@ class Config:
     remote: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     #: ids of the harness presets in play (drives the liveness guard).
     presets: tuple[str, ...] = ()
+    #: (as written, where it actually resolves) for targets that are symlinks
+    #: -- surfaced in every plan so a redirected wipe is never a surprise.
+    symlinked_targets: tuple[tuple[str, str], ...] = ()
     snapshot_dir: Path = field(default_factory=lambda: DEFAULT_SNAPSHOT_DIR.expanduser().resolve())
     retention: int = DEFAULT_RETENTION
     #: where this config was loaded from (None = defaults, no file found).
@@ -133,10 +237,14 @@ def _split_keep(section: str, value: object) -> tuple[tuple[Path, ...], tuple[st
     for raw in value:
         expanded = Path(os.path.expandvars(raw)).expanduser()
         if _is_glob(raw):
-            patterns.append(expanded.as_posix())
-            paths.extend(Path(m).resolve() for m in globmod.glob(str(expanded), recursive=True))
+            patterns.extend(_resolve_pattern(expanded.as_posix()))
+            for match in globmod.glob(str(expanded), recursive=True):
+                paths.append(Path(match))  # both spellings kept by _spellings()
         else:
-            paths.append(expanded.resolve())
+            # store the path AS WRITTEN: _spellings() supplies the resolved
+            # form too, so a symlinked keep entry still matches the link
+            # itself, which is what the walker actually sees.
+            paths.append(expanded)
     return tuple(paths), tuple(patterns)
 
 
@@ -253,6 +361,7 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         targets[scope] = paths
 
     # merge preset targets after explicit ones, with the same guards
+    symlinked_targets: list[tuple[str, str]] = []
     for scope, extra in preset_targets.items():
         if not extra:
             continue
@@ -269,6 +378,10 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                 )
             if rp not in merged:
                 merged.append(rp)
+            if rp != p:
+                # following a link is usually right (stow/chezmoi dotfiles),
+                # but the user must SEE where the wipe actually lands
+                symlinked_targets.append((str(p), str(rp)))
         targets[scope] = tuple(merged)
 
     # The snapshot store protects itself: it is always on the keep-list.
@@ -280,6 +393,7 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         keep=keep,
         targets=targets,
         remote=remote,
+        symlinked_targets=tuple(symlinked_targets),
         presets=tuple(enabled),
         snapshot_dir=snapshot_dir,
         retention=retention,

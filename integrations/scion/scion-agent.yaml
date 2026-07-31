@@ -40,6 +40,17 @@ setup:
   # NeurAIlyzer ships as a Python package; install it into the agent image.
   - pip install --no-cache-dir "neurailyzer[mcp]"
   - mkdir -p /workspace/.neurailyzer
+  # Write a config BEFORE the server starts -- an explicit --config that does
+  # not exist is an error, and every tool call would refuse. `detect --enable`
+  # creates it and enables whatever harness the agent image actually runs.
+  - >-
+    neurailyzer --config /workspace/.neurailyzer/config.toml detect --enable
+    || printf '[presets]\nenabled = []\n' > /workspace/.neurailyzer/config.toml
+  # Snapshots must OUTLIVE the agent's scratch, or restore points die with
+  # the state they protect. Point this at a mounted volume in real use.
+  - >-
+    printf '\n[snapshots]\ndir = "/workspace/.neurailyzer/snapshots"\n'
+    >> /workspace/.neurailyzer/config.toml
 
 prompt: |
   You have NeurAIlyzer available for state hygiene. Use it deliberately:

@@ -62,6 +62,10 @@ PROCESS_HINTS: dict[str, tuple[str, ...]] = {
 #: WAL sidecars: if these exist, a writer either is live or died uncleanly.
 _WAL_SUFFIXES = ("-wal", "-shm")
 
+#: stands in for hand-configured [targets] paths, which belong to no preset
+#: (no process/pid contract is known for them -- only sidecars can fire).
+TARGETS_PSEUDO_PRESET = "configured targets"
+
 
 @dataclass(frozen=True)
 class Liveness:
@@ -144,15 +148,24 @@ def _glob(pattern: Path) -> list[Path]:
     return [Path(m) for m in globmod.glob(str(pattern))]
 
 
+#: Test hook: with the process scan on, a developer machine has dozens of
+#: processes whose command line contains "claude", so a test that seeds a WAL
+#: sidecar would pass no matter what. Setting this lets a test prove the
+#: sidecar itself is what trips the guard.
+ENV_DISABLE_PROCESS_SCAN = "NEURAILYZER_DISABLE_PROCESS_SCAN"
+
+
 def _running_process_hits(fragments: tuple[str, ...]) -> list[str]:
     """Best-effort process scan. Empty list on any platform we can't ask."""
     hits: list[str] = []
+    if os.environ.get(ENV_DISABLE_PROCESS_SCAN):
+        return hits
     if os.name == "nt":
         exe = shutil.which("tasklist")
         cmd = [exe, "/fo", "csv", "/nh"] if exe else None
     else:
         exe = shutil.which("ps")
-        cmd = [exe, "-eo", "command"] if exe else None
+        cmd = [exe, "-eo", "pid=,command="] if exe else None
     if not cmd:
         return hits
     try:
@@ -161,26 +174,44 @@ def _running_process_hits(fragments: tuple[str, ...]) -> list[str]:
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return hits
-    own_pid = str(os.getpid())
+    # Exclude OURSELVES by pid. Matching on the substring "neurailyzer"
+    # instead would blind the guard to any harness launched from a directory
+    # with that name -- exactly the machine where someone runs this tool.
+    mine = {os.getpid(), os.getppid()}
     for line in out.splitlines():
-        if own_pid in line and "neurailyzer" in line:
-            continue  # never report ourselves
+        head, _, rest = line.strip().partition(" ")
+        pid: int | None = int(head) if head.isdigit() else None
+        command = rest if pid is not None else line
+        if pid in mine:
+            continue
         for frag in fragments:
-            if frag.lower() in line.lower() and "neurailyzer" not in line.lower():
+            if frag.lower() in command.lower():
                 hits.append(frag)
                 break
     return sorted(set(hits))
 
 
-def _open_wal_sidecars(roots: tuple[Path, ...]) -> list[str]:
-    """SQLite -wal/-shm files under the targets (live writer or unclean exit)."""
+def _open_wal_sidecars(roots: tuple[Path, ...], limit: int = 10) -> list[str]:
+    """SQLite -wal/-shm files under the targets (live writer or unclean exit).
+
+    Stops at *limit* hits rather than materializing a whole tree: on a real
+    ~/.claude this walk would otherwise stat a gigabyte of transcripts on
+    every wipe, once per enabled preset.
+    """
     found: list[str] = []
     for root in roots:
         if not root.exists():
             continue
-        candidates = [root] if root.is_file() else list(root.rglob("*"))
-        found.extend(str(p) for p in candidates if p.is_file() and p.name.endswith(_WAL_SUFFIXES))
-    return sorted(found)[:10]
+        if root.is_file():
+            if root.name.endswith(_WAL_SUFFIXES):
+                found.append(str(root))
+            continue
+        for path in root.rglob("*"):
+            if path.name.endswith(_WAL_SUFFIXES) and path.is_file():
+                found.append(str(path))
+                if len(found) >= limit:
+                    return sorted(found)
+    return sorted(found)
 
 
 def check(preset_id: str, roots: tuple[Path, ...] = ()) -> Liveness:
@@ -201,7 +232,28 @@ def check(preset_id: str, roots: tuple[Path, ...] = ()) -> Liveness:
     return Liveness(preset_id=preset_id, likely_running=bool(reasons), reasons=tuple(reasons))
 
 
-def check_enabled(preset_ids: list[str], roots: tuple[Path, ...] = ()) -> list[Liveness]:
-    """Check every enabled preset; only positives come back."""
-    out = [check(pid, roots) for pid in preset_ids]
+def check_enabled(
+    preset_ids: list[str],
+    roots: tuple[Path, ...] = (),
+    roots_by_preset: dict[str, tuple[Path, ...]] | None = None,
+) -> list[Liveness]:
+    """Check every enabled preset; only positives come back.
+
+    Pass *roots_by_preset* so a WAL sidecar is blamed on the harness that
+    actually owns it -- otherwise one sidecar under Codex's tree reports
+    every enabled preset as running, naming harnesses the user may not even
+    have installed.
+    """
+    out = []
+    claimed: set[Path] = set()
+    for pid in preset_ids:
+        scoped = roots_by_preset.get(pid, ()) if roots_by_preset is not None else roots
+        claimed.update(scoped)
+        out.append(check(pid, scoped))
+    # Roots configured by hand belong to no preset. They still hold state a
+    # live writer may own, so they are checked too -- scoping the sidecar
+    # search per preset must not leave [targets] paths unguarded.
+    unowned = tuple(r for r in roots if r not in claimed)
+    if unowned:
+        out.append(check(TARGETS_PSEUDO_PRESET, unowned))
     return [live for live in out if live.likely_running]

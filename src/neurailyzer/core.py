@@ -27,9 +27,15 @@ class ScopeStatus:
     configured: bool
     available: bool  # an adapter exists in this release
     roots: tuple[str, ...]
+    #: -1 means "not counted" (the remote scope does not probe the network
+    #: from list-state); it must never be rendered as 0.
     file_count: int
     total_bytes: int
     kept_count: int
+
+    @property
+    def counted(self) -> bool:
+        return self.file_count >= 0
 
 
 @dataclass(frozen=True)
@@ -63,11 +69,21 @@ def build_wipers(config: Config, scopes: list[str]) -> list[Wiper]:
 
 def scope_status(config: Config, scope: str) -> ScopeStatus:
     if scope == REMOTE_SCOPE:
-        # no network from list-state: show configured providers, not live counts
+        # list-state makes no network call, so counts are UNKNOWN here -- not
+        # zero. Reporting 0 would read as "nothing to lose" for the one scope
+        # whose deletes cannot be undone.
         providers = tuple(
             f"{pid}: {', '.join(surfaces)}" for pid, surfaces in config.remote.items()
         )
-        return ScopeStatus(scope, bool(providers), True, providers, 0, 0, 0)
+        return ScopeStatus(
+            scope=scope,
+            configured=bool(providers),
+            available=True,
+            roots=providers,
+            file_count=-1,
+            total_bytes=-1,
+            kept_count=0,
+        )
     roots = config.roots_for(scope)
     available = scope in FILE_SCOPES
     if not (available and roots):
@@ -119,7 +135,15 @@ def execute_wipe(
             affected,
             label,
             remote_manifest={
-                pid: {"description": p.description, "notes": list(p.notes)}
+                pid: {
+                    "description": p.description,
+                    # the ids ARE the restore point for a remote wipe: the
+                    # delete is irreversible, so this is the only record of
+                    # what existed at T
+                    "item_ids": list(p.item_ids),
+                    "complete": p.complete,
+                    "notes": list(p.notes),
+                }
                 for pid, p in manifests.items()
             }
             or None,
