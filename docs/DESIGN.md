@@ -56,10 +56,21 @@ Wipes are addressed by scope, least-blast-radius first:
 | `rag` | RAG vectors / embedded memory (a collection or a filter) | stale/biased retrieval |
 | `sandbox` | tool sandbox, temp, downloads | after experimenting |
 | `models` | unload resident models, flush KV, drop warm cache | force a cold, clean reload |
-| `remote` | provider-side stored state (threads/files/etc.), where the API allows | cloud hygiene |
+| `remote` | provider-side stored state (files, vector stores, batches), per-provider opt-in | cloud hygiene |
 | `all` | everything above | factory reset |
 
-Scopes compose: `--scope session,sandbox`.
+Scopes compose: `neurailyzer wipe session sandbox`.
+
+**Presets** (`docs/../src/neurailyzer/presets.py`) map a known harness to the
+scopes above plus its keep-list, so `neurailyzer detect --enable` configures a
+machine without anyone hand-listing paths. A preset ships only when every path
+is source-verified: `REGISTRY` refuses `verified=False` entries at import,
+because a guessed path in a wiper is a destructive bug, not a stale doc.
+
+**Liveness.** Wiping a live WAL-mode SQLite store corrupts rather than resets,
+so a commit-wipe consults a best-effort running-harness check first
+(`liveness.py`) and refuses unless `--force`. It is explicitly advisory: a
+positive is a strong signal, a negative is not proof.
 
 ## 5. Interfaces
 
