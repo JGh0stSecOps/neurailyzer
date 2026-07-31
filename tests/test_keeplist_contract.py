@@ -34,7 +34,9 @@ def _wipe(cfg_path: Path, scope: str = "session") -> tuple[PathWiper, tuple[Path
 
 def _config(tmp_path: Path, target: Path, keep: list[str]) -> Path:
     cfg = tmp_path / "c.toml"
-    entries = ", ".join(f'"{k}"' for k in keep)
+    # forward slashes on every platform: a Windows path in TOML would treat
+    # backslash sequences as escapes ("\U..." -> invalid hex value)
+    entries = ", ".join(f'"{Path(k).as_posix()}"' for k in keep)
     cfg.write_text(
         f'[targets.session]\npaths = ["{target.as_posix()}"]\n'
         f"[keep]\npaths = [{entries}]\n"
