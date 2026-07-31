@@ -179,10 +179,12 @@ def build_server(config_path: str | None = None) -> Any:
     @server.tool(
         description=(
             "Roll state back to a point in time (ISO-8601) or snapshot id. "
-            "Dry-run unless commit=true; commits snapshot current state first."
+            "Dry-run unless commit=true; commits snapshot current state first "
+            "and refuse if a targeted harness looks like it is running "
+            "(force=true overrides)."
         )
     )
-    def nl_restore(to: str, commit: bool = False) -> dict[str, Any]:
+    def nl_restore(to: str, commit: bool = False, force: bool = False) -> dict[str, Any]:
         cfg, refusal = _load_or_reason(config_path)
         if cfg is None:
             return refusal or {"ok": False, "reason": "unknown configuration error"}
@@ -194,6 +196,22 @@ def build_server(config_path: str | None = None) -> Any:
         if snap is None:
             return {"ok": False, "reason": f"no snapshot at or before {to!r}"}
         if commit:
+            # A restore rewrites and deletes files, so the same live-harness
+            # hazard applies -- and an agent restoring mid-session IS the
+            # live case. Guard on the snapshot's own roots.
+            snap_roots = tuple(Path(p) for rs in snap.targets.values() for p in rs)
+            live = liveness.check_enabled(list(cfg.presets), snap_roots)
+            if live and not force:
+                return {
+                    "ok": False,
+                    "reason": "a targeted harness looks like it is RUNNING -- "
+                    "restoring over a live session store can corrupt it. Close "
+                    "it, or call again with force=true if you are certain.",
+                    "liveness": [
+                        {"preset": entry.preset_id, "reasons": list(entry.reasons)}
+                        for entry in live
+                    ],
+                }
             store.take(
                 {s: tuple(Path(p) for p in roots) for s, roots in snap.targets.items()},
                 label="pre-restore",

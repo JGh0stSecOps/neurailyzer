@@ -37,6 +37,60 @@ vacuously:
 - **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
   file outside the target tree. It now refuses rather than following.
 
+### Fixed — "never touched" now covers restore's write half
+- **Restore overwrote keep-list files.** The keep-list stopped restore
+  *removing* a protected file but not *rewriting* it, so rolling back
+  reverted a rotated credential to its old value — silent damage of exactly
+  the kind the keep-list exists to prevent. Protected destinations are now
+  skipped and reported.
+- **One un-removable file aborted the whole wipe.** A `PermissionError` that
+  survived the read-only retry escaped `commit()`, stranding every remaining
+  file. Failures are counted, reported, and mark the plan incomplete.
+
+### Fixed — the snapshot store no longer leaks what it protects
+- **Restore recreated a `0700` directory as `0755`**, so rolling back turned
+  a private tree world-readable as a side effect. Directory modes are
+  recorded in the manifest and restored (older manifests still load).
+- **A `0600` credential was copied into a `0644` blob under a `0755` tree.**
+  The store holds verbatim copies of whatever was in the wipe targets, so on
+  a shared machine the hygiene tool itself disclosed the secrets it was asked
+  to clean up around. The store, its blobs, and its manifests (which list
+  every path that existed) are created owner-only.
+
+### Fixed — a wipe that could not read everything now says so
+- **An unreadable subtree made a wipe silently partial while `verify()`
+  returned True.** `os.walk` swallows permission errors by default, so a
+  locked directory vanished from the plan *and* from the verification — the
+  tool reported "state matches the plan" while the files the user asked to
+  destroy were still on disk. For a privacy tool that false assurance of
+  deletion is the worst possible failure. Walk errors are now collected,
+  reported as `UNREADABLE` notes, mark the plan `complete: false`, and make
+  `verify()` return False (exit code 1).
+
+### Fixed — the restore path is the safety net, so it must not be brittle
+- **One truncated manifest made every snapshot in the store unreachable.**
+  `list()` raised, so `snapshot --list`, `restore` and pruning all failed —
+  a single corrupt file took every other restore point down with it. Damaged
+  manifests are now skipped *and reported* (silently losing a snapshot the
+  user believes they have would be equally bad).
+- **A remote-only wipe's snapshot shadowed the real restore point.** It
+  records no file targets (it exists to keep the deleted-id manifest), yet
+  it was the nearest snapshot to "now" — so `restore --to <now>` after one
+  silently rolled a tree back to nothing while the real restore point sat
+  one entry behind. Content-free snapshots are skipped when resolving by
+  time, and remain reachable by exact id.
+- **A dry-run restore never checked that the blobs still exist**, so it
+  listed files it could not actually restore — a safety net promising a
+  catch it would drop. Missing blobs are reported while planning.
+- **`snapshots._force_unlink` chmodded through symlinks** despite a docstring
+  claiming otherwise; it was missing the guard its twin in `wipers/local.py`
+  had.
+- **`restore --force` was a dead flag**: the liveness guard never ran on the
+  restore path, though a restore rewrites and deletes files.
+- **The "precious directory" and home-directory refusals compared paths
+  case-sensitively**, so on macOS and Windows `~/downloads` sailed past a
+  guard that stopped `~/Downloads` — the same directory.
+
 ### Fixed — the guard, on every surface
 - **A WAL sidecar was blamed on every enabled preset**, so one file under
   Codex's tree reported Hermes as running — a harness the user may not even
@@ -53,11 +107,19 @@ vacuously:
   same check and takes `force`.
 - **`restore --commit` had no guard either**, though it rewrites and deletes
   files; it now takes `--force` too.
+- **The fallback matcher matched a harness name anywhere in a command line**,
+  so an editor with `hermes-agent/` open, a `git clone` of it, or a `grep`
+  mentioning it looked like the harness itself — and a false positive here
+  blocks a legitimate wipe or restore. It matches the executable now. (Found
+  because it intermittently broke this project's own test suite.)
 - **Self-exclusion matched the substring "neurailyzer" in any command line**,
   so a harness launched from a directory with that name was invisible to the
   guard. Exclusion is by pid now.
 
 ### Fixed — tests that passed for the wrong reason
+*(Four instances, all found by review rather than by the suite going red —
+which is the point: a vacuous test is invisible until someone checks what it
+would catch.)*
 - Nine of ten "credentials and memory survive" assertions in the flagship E2E
   sat **outside every wipe target**, so they would pass with no keep-list at
   all. The suite now proves containment first, and a new
@@ -67,6 +129,12 @@ vacuously:
   "claude" on any developer machine rather than by the sidecar they seed. The
   process scan is now stubbed so the sidecar is the only possible trigger,
   and they assert the reason and preset, not just the exit code.
+- The symlink-chmod guard test created its link in a *writable* directory, so
+  `unlink()` succeeded and the read-only recovery path — the only place the
+  guard lives — never ran. It would have passed with the guard deleted.
+- The E2E found its snapshot id by matching a `"2026"` prefix while the
+  fixture seeded `sessions/2026/07/30/…`, so line-wrapping at certain widths
+  matched the wrong token. It matches the full id shape now.
 
 ### Fixed — remote wiper hardening
 An adversarial review pass over the remote wipers found eleven defects; all
@@ -104,7 +172,7 @@ are fixed with a regression test each:
   import, so an unconfirmed path can never reach a wipe plan.
 - **Glob keep-list entries.** `~/.claude/projects/*/memory` protects matches
   created *after* the config was loaded, not just ones that existed then.
-- **Remote provider wipers** (`--scope remote`) for OpenAI, Anthropic, and
+- **Remote provider wipers** (`wipe remote`) for OpenAI, Anthropic, and
   xAI, configured per surface via `[remote.<provider>]`. Tokens are read from
   the environment and never logged; a surface ships only where both list and
   delete endpoints exist. Remote deletes are marked irreversible and the

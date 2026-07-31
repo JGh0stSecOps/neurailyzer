@@ -99,22 +99,35 @@ CLAUDE_CODE = Preset(
     verified=True,
     name="Claude Code",
     vendor="Anthropic",
-    detect=("~/.claude",),
+    # CLAUDE_CONFIG_DIR relocates the whole tree; a preset that only knows
+    # ~/.claude would silently see nothing on a machine that sets it.
+    detect=("$CLAUDE_CONFIG_DIR", "~/.claude"),
     session=(
         # per-project transcripts + per-session subagent dirs
+        "$CLAUDE_CONFIG_DIR/projects",
         "~/.claude/projects",
+        "$CLAUDE_CONFIG_DIR/history.jsonl",
         "~/.claude/history.jsonl",
+        "$CLAUDE_CONFIG_DIR/sessions",
         "~/.claude/sessions",
+        "$CLAUDE_CONFIG_DIR/session-env",
         "~/.claude/session-env",
     ),
     sandbox=(
+        "$CLAUDE_CONFIG_DIR/shell-snapshots",
         "~/.claude/shell-snapshots",
+        "$CLAUDE_CONFIG_DIR/paste-cache",
         "~/.claude/paste-cache",
+        "$CLAUDE_CONFIG_DIR/file-history",
         "~/.claude/file-history",
+        "$CLAUDE_CONFIG_DIR/debug",
         "~/.claude/debug",
+        "$CLAUDE_CONFIG_DIR/cache",
         "~/.claude/cache",
-        "~/.claude/downloads",
+        "$CLAUDE_CONFIG_DIR/telemetry",
         "~/.claude/telemetry",
+        "$CLAUDE_CONFIG_DIR/downloads",
+        "~/.claude/downloads",
     ),
     keep=(
         # auto-memory lives INSIDE the projects tree -- the one trap that
@@ -135,6 +148,19 @@ CLAUDE_CODE = Preset(
         "~/.claude/scheduled_tasks.lock",
         "~/.claude/.credentials.json",
         "~/.claude.json",  # account/org identity + project trust (outside the tree)
+        "$CLAUDE_CONFIG_DIR/projects/*/memory",
+        "$CLAUDE_CONFIG_DIR/CLAUDE.md",
+        "$CLAUDE_CONFIG_DIR/settings.json",
+        "$CLAUDE_CONFIG_DIR/settings.local.json",
+        "$CLAUDE_CONFIG_DIR/remote-settings.json",
+        "$CLAUDE_CONFIG_DIR/policy-limits.json",
+        "$CLAUDE_CONFIG_DIR/plugins",
+        "$CLAUDE_CONFIG_DIR/hooks",
+        "$CLAUDE_CONFIG_DIR/ide",
+        "$CLAUDE_CONFIG_DIR/plans",
+        "$CLAUDE_CONFIG_DIR/backups",
+        "$CLAUDE_CONFIG_DIR/tasks",
+        "$CLAUDE_CONFIG_DIR/.credentials.json",
     ),
     notes="Layout verified against a live 2026-07 install (macOS) and the "
     "upstream claude-directory doc. projects/<slug>/*.jsonl are transcripts; "

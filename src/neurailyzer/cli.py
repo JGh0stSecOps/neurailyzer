@@ -206,6 +206,8 @@ def snapshot(
     store = SnapshotStore(cfg.snapshot_dir)
     if list_:
         snaps = store.list()
+        for bad in store.corrupt:
+            err_console.print(f"[red]unreadable snapshot[/red] {bad}")
         if not snaps:
             console.print("[dim]no snapshots yet[/dim]")
             return
@@ -291,8 +293,17 @@ def wipe(
     console.print(f"[red]COMMIT[/red] wipe: [bold]{label}[/bold]")
     _print_plans(list(report.plans), scopes)
     bad = [s for s, ok in report.verified.items() if not ok]
+    incomplete = [p.scope for p in report.plans if not p.complete]
+    if incomplete:
+        err_console.print(
+            f"[red]INCOMPLETE[/red] for: {', '.join(sorted(set(incomplete)))} -- "
+            "part of the target could not be read or enumerated, so state you "
+            "asked to remove may still exist. See the notes above."
+        )
     if bad:
         err_console.print(f"[red]verify FAILED[/red] for: {', '.join(bad)}")
+        raise typer.Exit(code=1)
+    if incomplete:
         raise typer.Exit(code=1)
     console.print("[green]verified[/green] -- state matches the plan.")
 
@@ -352,7 +363,7 @@ def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
         elif s == REMOTE_SCOPE:
             console.print(
                 f"  - {s}: [yellow]no providers configured -- skipped[/yellow] "
-                "[dim](see [remote.<provider>] in the README)[/dim]"
+                "[dim](see \\[remote.<provider>] in the README)[/dim]"
             )
         else:
             console.print(f"  - {s}: [dim]no adapter yet -- skipped[/dim]")
@@ -371,6 +382,11 @@ def restore(
     store = SnapshotStore(cfg.snapshot_dir)
     try:
         snap = store.resolve(to)
+        for bad in store.corrupt:
+            err_console.print(
+                f"[yellow]warning:[/yellow] unreadable snapshot {bad} -- "
+                "it was skipped when resolving"
+            )
     except SnapshotError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2) from exc
@@ -383,8 +399,29 @@ def restore(
         f"[bold]{mode}[/bold] restore --to {to!r} -> snapshot [bold]{snap.id}[/bold] "
         f"(taken {snap.taken_at.isoformat()})"
     )
+    if snap.remote_manifest:
+        # Remote deletes cannot be undone, so the ids are all this snapshot
+        # can offer. Reporting them is the whole reason it records them.
+        console.print(
+            "[yellow]note:[/yellow] this restore point also recorded remote "
+            "objects that were deleted. They CANNOT be restored -- listed "
+            "here only so you know what is gone:"
+        )
+        for provider, entry in sorted(snap.remote_manifest.items()):
+            ids = entry.get("item_ids") or []
+            console.print(f"  [bold]{provider}[/bold]: {len(ids)} object(s)")
+            for item in ids[:20]:
+                console.print(f"    [dim]{item}[/dim]")
+            if len(ids) > 20:
+                console.print(f"    [dim]... and {len(ids) - 20} more[/dim]")
     if commit:
-        # a restore is destructive too — snapshot current state first
+        # a restore rewrites and deletes files, so the live-harness hazard
+        # applies here too -- and a rewritten SQLite db under a live -wal is
+        # worse than either alone.
+        snap_roots = tuple(Path(p) for rs in snap.targets.values() for p in rs)
+        if not _liveness_ok(cfg, [], force=force, extra_roots=snap_roots):
+            raise typer.Exit(code=3)
+        # a restore is destructive too -- snapshot current state first
         pre = store.take(
             {s: tuple(Path(p) for p in roots) for s, roots in snap.targets.items()},
             label="pre-restore",

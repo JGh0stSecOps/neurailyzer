@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from neurailyzer import snapshots as snapshots_mod
 from neurailyzer.config import KeepList, load
 from neurailyzer.snapshots import SnapshotError, SnapshotStore, parse_point_in_time
 
@@ -26,7 +29,7 @@ def test_take_records_everything(state: dict[str, Path]) -> None:
     assert "threads/t1.jsonl" in names
     assert "chat.db" in names
     assert "deep/nested/artifact.bin" in names
-    assert any(d[1] == "deep/empty" for d in snap.dirs)  # empty dir recorded
+    assert any(d.relpath == "deep/empty" for d in snap.dirs)  # empty dir recorded
     if state["has_symlinks"]:
         assert any(ln.relpath == "sneaky-link" for ln in snap.links)  # link, not its target
     assert snap.total_bytes > 0
@@ -161,3 +164,165 @@ def test_snapshot_store_dedupes_blobs(state: dict[str, Path]) -> None:
     store.take(targets, "b")  # identical content -> no new blobs
     n2 = len(list(store.blob_dir.glob("*/*")))
     assert n1 == n2
+
+
+# -- resilience: the restore path IS the safety net --------------------------
+
+
+def test_one_corrupt_manifest_does_not_hide_the_others(state: dict[str, Path]) -> None:
+    """A single truncated file must not make every restore point unreachable."""
+    store, targets = _store_and_targets(state)
+    good = store.take(targets, "good")
+    (store.manifest_dir / "broken.json").write_text("{ truncated", encoding="utf-8")
+
+    snaps = store.list()
+    assert [s.id for s in snaps] == [good.id]
+    assert store.corrupt and "broken.json" in store.corrupt[0]
+    # and it is still resolvable/restorable
+    assert store.resolve(good.id) is not None
+
+
+def test_corrupt_manifests_are_reported_not_swallowed(state: dict[str, Path]) -> None:
+    """Silently losing a snapshot the user believes they have is just as bad
+    as raising on it."""
+    store, targets = _store_and_targets(state)
+    store.take(targets, "good")
+    (store.manifest_dir / "bad.json").write_text('{"id": "x"}', encoding="utf-8")
+    store.list()
+    assert any("bad.json" in c for c in store.corrupt)
+
+
+def test_dry_run_restore_reports_a_missing_blob(state: dict[str, Path]) -> None:
+    """A dry-run that lists a file it cannot actually restore is worse than
+    useless -- it is a safety net promising a catch it will drop."""
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "golden")
+    (state["sandbox"] / "notes.txt").unlink()
+    for blob in store.blob_dir.glob("*/*"):
+        blob.unlink()
+
+    plan = store.plan_restore(snap, KeepList())
+    assert plan.errors, "dry-run stayed silent about unrestorable files"
+    assert any("missing blob" in e for e in plan.errors)
+    assert not plan.restored, "planned a restore it cannot perform"
+
+
+def test_force_unlink_does_not_chmod_through_a_symlink(
+    state: dict[str, Path], tmp_path: Path
+) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX modes")
+    if not state["has_symlinks"]:
+        pytest.skip("symlinks unavailable")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("data")
+    outside.chmod(0o644)
+    link = state["sandbox"] / "ln"
+    link.symlink_to(outside)
+    link.parent.chmod(0o500)  # make unlink fail -> exercise the recovery path
+    try:
+        with contextlib.suppress(PermissionError, OSError):
+            snapshots_mod._force_unlink(link)
+    finally:
+        link.parent.chmod(0o700)
+    assert outside.stat().st_mode & 0o777 == 0o644, "chmod leaked through the link"
+
+
+def test_a_remote_only_snapshot_does_not_shadow_a_real_restore_point(
+    state: dict[str, Path],
+) -> None:
+    """A remote-only wipe takes a snapshot purely to keep the id manifest.
+
+    It records no file targets, so letting it answer "restore me to now"
+    would silently roll a tree back to nothing while the real restore point
+    sat one entry behind it.
+    """
+    store, targets = _store_and_targets(state)
+    real = store.take(targets, "real-work")
+    time.sleep(1.1)  # ids have 1s resolution
+    manifest_only = store.take({}, "remote-only")
+
+    latest = store.resolve((datetime.now(UTC) + timedelta(hours=1)).isoformat())
+    assert latest is not None
+    assert latest.id == real.id, "a content-free snapshot shadowed the real one"
+    # ...but it is still reachable by exact id, since it records what was deleted
+    assert store.resolve(manifest_only.id) is not None
+
+
+def test_the_snapshot_store_is_owner_only(state: dict[str, Path]) -> None:
+    """The store holds verbatim copies of whatever was in the wipe targets.
+
+    A hygiene tool must not be the thing that discloses the secrets it was
+    asked to clean up around: a 0600 credential copied into a 0644 blob under
+    a 0755 tree is readable by every other user on the machine.
+    """
+    if os.name == "nt":
+        pytest.skip("POSIX modes")
+    secret = state["sandbox"] / "auth.json"
+    secret.write_text('{"token":"s3cret"}')
+    secret.chmod(0o600)
+
+    store, targets = _store_and_targets(state)
+    store.take(targets, "with-a-credential")
+
+    assert store.root.stat().st_mode & 0o077 == 0, "store root is group/world readable"
+    assert store.blob_dir.stat().st_mode & 0o077 == 0
+    for blob in store.blob_dir.glob("*/*"):
+        assert blob.stat().st_mode & 0o077 == 0, f"{blob} is readable by others"
+    for manifest in store.manifest_dir.glob("*.json"):
+        assert manifest.stat().st_mode & 0o077 == 0, "manifest lists every path"
+
+
+def test_directory_modes_survive_a_restore(state: dict[str, Path]) -> None:
+    """Recreating a 0700 tree at the umask default would turn a private
+    directory world-readable as a side effect of rolling back."""
+    if os.name == "nt":
+        pytest.skip("POSIX modes")
+    private = state["sandbox"] / "private"
+    private.mkdir()
+    private.chmod(0o700)
+    (private / "note.txt").write_text("secret")
+
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "with-a-private-dir")
+    shutil.rmtree(private)
+
+    store.restore(snap, KeepList())
+    assert private.is_dir()
+    assert private.stat().st_mode & 0o777 == 0o700, "restore widened the mode"
+    assert (private / "note.txt").read_text() == "secret"
+
+
+def test_restore_handles_a_file_that_became_a_directory(state: dict[str, Path]) -> None:
+    """An audit believed this aborted restore mid-flight. It does not -- the
+    removal pass clears the wrong-typed entry before the write pass runs.
+    Locked in here so it stays that way."""
+    store, targets = _store_and_targets(state)
+    thing = state["sandbox"] / "thing"
+    thing.write_text("i was a file")
+    snap = store.take(targets, "before-the-swap")
+
+    thing.unlink()
+    thing.mkdir()
+    (thing / "inner.txt").write_text("now a directory")
+
+    plan = store.restore(snap, KeepList())
+    assert not plan.errors, plan.errors
+    assert thing.is_file(), "a file recorded as a file came back as something else"
+    assert thing.read_text() == "i was a file"
+
+
+def test_restore_handles_a_directory_that_became_a_file(state: dict[str, Path]) -> None:
+    store, targets = _store_and_targets(state)
+    memory = state["sandbox"] / "memory"
+    memory.mkdir()
+    (memory / "note.md").write_text("ORIGINAL")
+    snap = store.take(targets, "before-the-swap")
+
+    shutil.rmtree(memory)
+    memory.write_text("now a file")
+
+    plan = store.restore(snap, KeepList())
+    assert not plan.errors, plan.errors
+    assert memory.is_dir(), "a directory recorded as a directory did not come back"
+    assert (memory / "note.md").read_text() == "ORIGINAL"

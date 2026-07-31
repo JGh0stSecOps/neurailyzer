@@ -53,7 +53,7 @@ The concrete map of agent/model state, where it lives, how an adapter resets it,
 | Provider "memory" features | stored user memory | provider-specific endpoint |
 | Other hosted providers | varies | behind a per-provider capability flag until verified |
 
-**Snapshot:** a manifest of the remote IDs (so `restore` can at least report what was removed; remote restore is best-effort — some deletes are irreversible, and the plan must say so loudly).
+**Snapshot:** a manifest of the remote IDs. `restore` prints them and says plainly that they **cannot** be brought back — a provider delete is irreversible, so the record is all a restore point can offer. The wipe plan marks these `reversible: false` before you commit.
 **Verify:** re-list; IDs absent.
 
 ---

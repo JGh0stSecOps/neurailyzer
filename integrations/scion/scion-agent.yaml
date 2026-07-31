@@ -38,7 +38,8 @@ mcp_servers:
 # Everything below is ordinary Scion template config -- adjust to taste.
 setup:
   # NeurAIlyzer ships as a Python package; install it into the agent image.
-  - pip install --no-cache-dir "neurailyzer[mcp]"
+  # not on PyPI yet -- install from the repo
+  - pip install --no-cache-dir "neurailyzer[mcp] @ git+https://github.com/JGh0stSecOps/neurailyzer@main"
   - mkdir -p /workspace/.neurailyzer
   # Write a config BEFORE the server starts -- an explicit --config that does
   # not exist is an error, and every tool call would refuse. `detect --enable`

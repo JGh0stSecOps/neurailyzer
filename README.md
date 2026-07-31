@@ -71,7 +71,7 @@ neurailyzer detect --enable   # find what's installed, write the config
 | `scion` | Scion (Google, experimental) | agent worktrees may hold **unmerged work**; `hub.db` holds identity/signing keys — neither is ever touched |
 | `venice-web` | Venice | history is browser-side; targets per-origin IndexedDB only, never Chromium's *shared* localStorage |
 
-Every preset's keep-list is applied automatically, and each skip is reported. A preset ships only when every path is traced to upstream source or a live install — `Preset.verified` has no default, so that claim is always deliberate, and `REGISTRY` refuses an unverified entry at import. See [integrations/](integrations/) to register NeurAIlyzer as a **tool inside** these harnesses over MCP.
+Every preset's keep-list is applied automatically, and each skip is reported. A preset should ship only when every path is traced to upstream source or a live install. `Preset.verified` has no default, so making that claim is always a deliberate act, and `REGISTRY` refuses at import any preset that declares itself unverified — the tracing itself is a review obligation, not something code can check. See [integrations/](integrations/) to register NeurAIlyzer as a **tool inside** these harnesses over MCP.
 
 ## What's built · what needs building
 
@@ -80,7 +80,7 @@ Every preset's keep-list is applied automatically, and each skip is reported. A 
 - `wipe` / `snapshot` / `restore` for any **file-tree state** — session transcripts, chat DB files, JSONL history, sandbox scratch, temp dirs — with dry-run defaults, keep-list protection, and point-in-time rollback
 - Content-addressed snapshot store with retention pruning; restores are bit-identical and themselves reversible
 - **Harness presets** + `detect` for the seven harnesses above, with glob keep-rules that protect state created *after* you enabled them
-- **Remote provider wipers** (`--scope remote`) for OpenAI, Anthropic, and xAI — per-surface opt-in, tokens from the environment, never logged
+- **Remote provider wipers** (`wipe remote`) for OpenAI, Anthropic, and xAI — per-surface opt-in, tokens from the environment, never logged
 - **Live-harness guard**: a commit-wipe refuses when a targeted harness looks like it's running. Where a harness publishes its own pid (Claude Code's `sessions/<pid>.json`, Grok Build's `leader.lock`) that pid is read and checked for liveness — exact, and immune to stale files from a crash; elsewhere it falls back to command-line matching and SQLite WAL sidecars
 - CLI, MCP server (mcp 2.x, stdio + streamable-http), and library — one core, three surfaces
 - CI on Linux/macOS/Windows × Python 3.11–3.13, including E2E smoke tests that drive the real CLI over a realistic multi-harness home

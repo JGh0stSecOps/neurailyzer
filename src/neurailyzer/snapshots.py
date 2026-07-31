@@ -35,6 +35,13 @@ from .config import KeepList
 _BLOBS = "blobs"
 _MANIFESTS = "manifests"
 
+#: The store holds VERBATIM COPIES of whatever was in the wipe targets --
+#: session transcripts, and any credential a user pointed a target at. It is
+#: therefore created owner-only: a hygiene tool must not be the thing that
+#: discloses the secrets it was asked to clean up around.
+_STORE_DIR_MODE = 0o700
+_BLOB_FILE_MODE = 0o600
+
 
 class SnapshotError(RuntimeError):
     """A snapshot operation failed. The message says why."""
@@ -50,6 +57,19 @@ class FileRecord:
     size: int
     mode: int
     mtime: float
+
+
+@dataclass(frozen=True)
+class DirRecord:
+    """One directory inside a snapshot -- with its mode.
+
+    Modes matter: recreating a 0700 directory at the umask default would turn
+    a private tree world-readable as a side effect of rolling back.
+    """
+
+    target: str
+    relpath: str
+    mode: int = 0o755
 
 
 @dataclass(frozen=True)
@@ -72,7 +92,7 @@ class Snapshot:
     targets: dict[str, tuple[str, ...]]  # scope -> absolute roots
     dir_roots: tuple[str, ...]  # roots that were directories when taken
     files: tuple[FileRecord, ...]
-    dirs: tuple[tuple[str, str], ...]  # (target root, relpath)
+    dirs: tuple[DirRecord, ...]
     links: tuple[LinkRecord, ...]
     #: provider -> what existed remotely at T. Remote deletes are one-way, so
     #: this is a RECORD, not restorable content (DESIGN 7).
@@ -147,7 +167,13 @@ def _parse_manifest(data: dict[str, Any]) -> Snapshot:
         dir_roots=tuple(data["dir_roots"]),
         remote_manifest=data.get("remote_manifest"),
         files=tuple(FileRecord(**f) for f in data["files"]),
-        dirs=tuple((d[0], d[1]) for d in data["dirs"]),
+        # tolerate the older 2-element form so pre-existing snapshots still load
+        dirs=tuple(
+            DirRecord(d[0], d[1], d[2] if len(d) > 2 else 0o755)
+            if isinstance(d, list)
+            else DirRecord(**d)
+            for d in data["dirs"]
+        ),
         links=tuple(LinkRecord(**ln) for ln in data["links"]),
     )
 
@@ -177,8 +203,18 @@ class SnapshotStore:
         self.root = root
         self.blob_dir = root / _BLOBS
         self.manifest_dir = root / _MANIFESTS
+        #: manifests that could not be read on the last list() call
+        self.corrupt: builtins.list[str] = []
 
     # -- take -----------------------------------------------------------------
+
+    def _mkdir_private(self, path: Path) -> None:
+        """Create *path* (and parents) owner-only where the OS supports it."""
+        path.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            for d in (path, *[p for p in path.parents if self.root in p.parents or p == self.root]):
+                with contextlib.suppress(OSError):
+                    os.chmod(d, _STORE_DIR_MODE)
 
     def take(
         self,
@@ -187,15 +223,18 @@ class SnapshotStore:
         remote_manifest: dict[str, Any] | None = None,
     ) -> Snapshot:
         """Record every file/dir/symlink under the target roots."""
-        self.blob_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        self._mkdir_private(self.blob_dir)
+        self._mkdir_private(self.manifest_dir)
+        if os.name != "nt":
+            with contextlib.suppress(OSError):
+                os.chmod(self.root, _STORE_DIR_MODE)
 
         now = datetime.now(UTC)
         slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)[:40] or "snap"
         snap_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(2)}-{slug}"
 
         files: list[FileRecord] = []
-        dirs: list[tuple[str, str]] = []
+        dirs: list[DirRecord] = []
         links: list[LinkRecord] = []
         dir_roots: set[str] = set()
         for _scope, roots in sorted(targets.items()):
@@ -218,7 +257,13 @@ class SnapshotStore:
                         )
                     )
                 for d in ds:
-                    dirs.append((str(root), d.relative_to(base).as_posix()))
+                    dirs.append(
+                        DirRecord(
+                            target=str(root),
+                            relpath=d.relative_to(base).as_posix(),
+                            mode=stat.S_IMODE(d.stat().st_mode),
+                        )
+                    )
                 for ln in lns:
                     links.append(
                         LinkRecord(
@@ -248,47 +293,74 @@ class SnapshotStore:
             "targets": {k: list(v) for k, v in snap.targets.items()},
             "dir_roots": list(snap.dir_roots),
             "files": [vars(f) for f in snap.files],
-            "dirs": [list(d) for d in snap.dirs],
+            "dirs": [vars(d) for d in snap.dirs],
             "links": [vars(ln) for ln in snap.links],
             "remote_manifest": snap.remote_manifest,
         }
         path = self.manifest_dir / f"{snap_id}.json"
         path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+        if os.name != "nt":
+            # a manifest lists every path that existed -- itself sensitive
+            with contextlib.suppress(OSError):
+                os.chmod(path, _BLOB_FILE_MODE)
         return snap
 
     def _store_blob(self, src: Path) -> str:
         digest = _hash_file(src)
         dest = self.blob_dir / digest[:2] / digest
         if not dest.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            self._mkdir_private(dest.parent)
             tmp = dest.with_suffix(".tmp")
             tmp.write_bytes(src.read_bytes())
+            if os.name != "nt":
+                # the source may be a 0600 credential; the copy must not be
+                # more permissive than the original ever was
+                with contextlib.suppress(OSError):
+                    os.chmod(tmp, _BLOB_FILE_MODE)
             tmp.replace(dest)
         return digest
 
     # -- list / resolve -------------------------------------------------------
 
     def list(self) -> builtins.list[Snapshot]:
-        """All snapshots, oldest first."""
+        """All readable snapshots, oldest first.
+
+        A corrupt manifest is SKIPPED, not raised: one truncated file must
+        not make every other restore point in the store unreachable. The
+        damaged ids are recorded in :attr:`corrupt` so callers can surface
+        them -- silently losing a snapshot the user believes they have would
+        be just as bad.
+        """
+        self.corrupt = []
         if not self.manifest_dir.is_dir():
             return []
         snaps: builtins.list[Snapshot] = []
         for mf in sorted(self.manifest_dir.glob("*.json")):
             try:
                 snaps.append(_parse_manifest(json.loads(mf.read_text(encoding="utf-8"))))
-            except (json.JSONDecodeError, KeyError, TypeError) as exc:
-                raise SnapshotError(f"corrupt manifest {mf}: {exc}") from exc
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError) as exc:
+                self.corrupt.append(f"{mf.name}: {exc}")
         snaps.sort(key=lambda s: s.taken_at)
         return snaps
 
     def resolve(self, to: str) -> Snapshot | None:
-        """*to* is a snapshot id, or a time -- nearest snapshot at/before it."""
+        """*to* is a snapshot id, or a time -- nearest snapshot at/before it.
+
+        Snapshots that record no file targets at all (a remote-only wipe
+        takes one purely to keep the id manifest) are skipped when resolving
+        BY TIME: they carry nothing to roll a file tree back to, so letting
+        one answer "restore me to now" would silently shadow the real restore
+        point sitting just behind it. They remain resolvable by exact id.
+        """
         snaps = self.list()
         for s in snaps:
             if s.id == to:
                 return s
         point = parse_point_in_time(to)
         eligible = [s for s in snaps if s.taken_at <= point]
+        with_content = [s for s in eligible if s.targets]
+        if with_content:
+            return with_content[-1]
         return eligible[-1] if eligible else None
 
     # -- restore --------------------------------------------------------------
@@ -304,7 +376,7 @@ class SnapshotStore:
         roots = [Path(r) for rs in snap.targets.values() for r in rs]
 
         wanted_files = {(f.target, f.relpath): f for f in snap.files}
-        wanted_dirs = set(snap.dirs)
+        wanted_dirs = {(d.target, d.relpath): d for d in snap.dirs}
         wanted_links = {(ln.target, ln.relpath): ln for ln in snap.links}
 
         # 1. remove what exists now but didn't at T (keep-list excepted)
@@ -336,17 +408,25 @@ class SnapshotStore:
         dir_roots = set(snap.dir_roots)
         for (target, relpath), rec in sorted(wanted_files.items()):
             dest = _dest(target, relpath, dir_roots)
+            if keep.protects(dest):
+                # "never touched" has to mean the WRITE half too: rolling a
+                # rotated credential back to its old value is exactly the
+                # kind of silent damage the keep-list exists to prevent.
+                plan.skipped_keep.append(str(dest))
+                continue
             blob = self.blob_dir / rec.sha256[:2] / rec.sha256
             differs = not (
                 dest.is_file() and not dest.is_symlink() and _hash_file(dest) == rec.sha256
             )
             if not differs:
                 continue
+            if not blob.exists():
+                # report this while PLANNING too -- a dry-run that lists a
+                # file it cannot actually restore is worse than useless
+                plan.errors.append(f"missing blob for {dest} ({rec.sha256[:12]}...)")
+                continue
             plan.restored.append(str(dest))
             if not commit:
-                continue
-            if not blob.exists():
-                plan.errors.append(f"missing blob for {dest} ({rec.sha256[:12]}...)")
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.exists() or dest.is_symlink():
@@ -354,12 +434,22 @@ class SnapshotStore:
             dest.write_bytes(blob.read_bytes())
             os.chmod(dest, stat.S_IMODE(rec.mode))
             os.utime(dest, (rec.mtime, rec.mtime))
-        for target, relpath in sorted(wanted_dirs):
+        for (target, relpath), drec in sorted(wanted_dirs.items()):
             dest = _dest(target, relpath, dir_roots)
-            if commit and not dest.is_dir():
+            if not commit:
+                continue
+            if not dest.is_dir():
                 dest.mkdir(parents=True, exist_ok=True)
+            if os.name != "nt":
+                # restore the recorded mode: recreating a 0700 tree at the
+                # umask default would leak it as a side effect of rolling back
+                with contextlib.suppress(OSError):
+                    os.chmod(dest, drec.mode)
         for (target, relpath), lrec in sorted(wanted_links.items()):
             dest = _dest(target, relpath, dir_roots)
+            if keep.protects(dest):
+                plan.skipped_keep.append(str(dest))
+                continue
             if dest.is_symlink() and os.readlink(dest) == lrec.link_to:
                 continue
             plan.restored.append(str(dest))
@@ -404,9 +494,22 @@ def _dest(target: str, relpath: str, dir_roots: set[str]) -> Path:
 
 
 def _force_unlink(path: Path) -> None:
-    """Unlink even Windows read-only files. Never follows symlinks."""
+    """Unlink, clearing a read-only attribute if that is what blocks us.
+
+    The chmod recovery never runs on a symlink: os.chmod FOLLOWS links, so it
+    would rewrite the mode of the destination -- a file outside the target
+    that we were never authorized to touch. (This is the twin of the guard in
+    wipers/local.py; it was missing here, and the old docstring claimed a
+    safety property the code did not have.)
+    """
+    if path.is_dir() and not path.is_symlink():
+        # the caller confused a tree for an entry; failing loudly beats
+        # chmodding a directory and then failing anyway
+        raise IsADirectoryError(f"refusing to unlink directory {path}")
     try:
         path.unlink()
     except PermissionError:
+        if path.is_symlink():
+            raise
         os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
         path.unlink()

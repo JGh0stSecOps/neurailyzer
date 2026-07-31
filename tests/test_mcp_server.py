@@ -161,3 +161,28 @@ def test_an_invalid_config_is_also_a_refusal(tmp_path: Path) -> None:
     out = _call(build_server(str(bad)), "nl_list_state", {})
     assert out["ok"] is False
     assert "no adapter" in out["reason"]
+
+
+def test_nl_restore_honors_the_liveness_guard(state: dict[str, Path]) -> None:
+    """An agent restoring mid-session is the live case, same as nl_wipe."""
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[presets]\nenabled = ["hermes"]\n')
+    server = build_server(str(cfg))
+    took = _call(server, "nl_snapshot", {"label": "before"})
+    assert took["ok"] is True
+    (state["sandbox"] / "state.db-wal").write_bytes(b"live wal")
+    out = _call(server, "nl_restore", {"to": took["id"], "commit": True})
+    assert out["ok"] is False
+    assert "RUNNING" in out["reason"]
+    assert out["liveness"]
+    assert (state["sandbox"] / "state.db-wal").exists()
+
+
+def test_nl_restore_force_overrides(state: dict[str, Path]) -> None:
+    cfg = state["config"]
+    cfg.write_text(cfg.read_text() + '\n[presets]\nenabled = ["hermes"]\n')
+    server = build_server(str(cfg))
+    took = _call(server, "nl_snapshot", {"label": "before"})
+    (state["sandbox"] / "state.db-wal").write_bytes(b"live wal")
+    out = _call(server, "nl_restore", {"to": took["id"], "commit": True, "force": True})
+    assert out["ok"] is True

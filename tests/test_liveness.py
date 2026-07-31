@@ -202,3 +202,81 @@ def test_sidecar_search_stops_at_the_limit(tmp_path: Path) -> None:
     for i in range(25):
         (root / f"db{i}.sqlite-wal").write_bytes(b"wal")
     assert len(liveness._open_wal_sidecars((root,), limit=5)) == 5
+
+
+# -- the guard must hold on restore too, on every surface -------------------
+
+
+def test_restore_commit_refuses_over_a_live_store(live_config: dict[str, Any]) -> None:
+    """A restore rewrites and deletes files. Rewriting a SQLite body from
+    time T under a write-ahead log from T+n is worse than either alone.
+
+    The byte assertions matter: without them this passes vacuously if the
+    restore simply found nothing to do.
+    """
+    cfg = live_config["config"]
+    proj = live_config["claude"] / "projects" / "-p"
+    take = runner.invoke(app, ["--config", str(cfg), "snapshot", "-l", "before"])
+    assert take.exit_code == 0, take.output
+
+    db = proj / "chat.db"
+    db.write_bytes(b"SQLite format 3\x00DIRTY-mid-write")
+    wal = proj / "chat.db-wal"
+    wal.write_bytes(b"live write-ahead log")
+    before = (db.read_bytes(), wal.read_bytes())
+
+    result = runner.invoke(
+        app, ["--config", str(cfg), "restore", "--to", "9999-01-01T00:00", "--commit"]
+    )
+    assert result.exit_code == 3, result.output
+    assert (db.read_bytes(), wal.read_bytes()) == before, "restore ran anyway"
+
+
+def test_restore_force_overrides_the_guard(live_config: dict[str, Any]) -> None:
+    cfg = live_config["config"]
+    assert runner.invoke(app, ["--config", str(cfg), "snapshot", "-l", "b"]).exit_code == 0
+    (live_config["claude"] / "projects" / "-p" / "chat.db-wal").write_bytes(b"wal")
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), "restore", "--to", "9999-01-01T00:00", "--commit", "--force"],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_a_process_that_merely_mentions_a_harness_is_not_a_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An editor with hermes-agent/ open, or a git clone of it, is not the
+    harness -- and a false positive here blocks a legitimate wipe."""
+    monkeypatch.delenv(liveness.ENV_DISABLE_PROCESS_SCAN, raising=False)
+    sample = "\n".join(
+        [
+            "  501 git clone https://github.com/NousResearch/hermes-agent",
+            "  502 rg codex /Users/me/src/notes",
+            "  503 /usr/bin/vim /Users/me/hermes-agent/README.md",
+        ]
+    )
+    monkeypatch.setattr(
+        liveness.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": sample})(),
+    )
+    monkeypatch.setattr(liveness.shutil, "which", lambda _n: "/bin/ps")
+    assert liveness._running_process_hits(("hermes", "codex")) == []
+
+
+def test_the_real_binary_is_still_matched(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(liveness.ENV_DISABLE_PROCESS_SCAN, raising=False)
+    sample = "\n".join(
+        [
+            "  601 /usr/local/bin/hermes --tui",
+            "  602 /Users/me/.local/bin/codex --cd /Users/me/src",
+        ]
+    )
+    monkeypatch.setattr(
+        liveness.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": sample})(),
+    )
+    monkeypatch.setattr(liveness.shutil, "which", lambda _n: "/bin/ps")
+    assert liveness._running_process_hits(("hermes", "codex")) == ["codex", "hermes"]

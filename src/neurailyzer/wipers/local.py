@@ -24,19 +24,30 @@ from ..config import KeepList
 from .base import WipePlan, Wiper
 
 
-def _walk(root: Path) -> tuple[list[Path], list[Path]]:
-    """(entries, dirs) under *root*: files+symlinks to unlink, dirs to prune.
+def _walk(root: Path) -> tuple[list[Path], list[Path], list[str]]:
+    """(entries, dirs, errors) under *root*.
 
+    Entries are files+symlinks to unlink, dirs are candidates to prune.
     Never follows symlinks; a symlinked directory is returned as an entry (the
     link gets unlinked), its destination is never visited.
+
+    ``os.walk`` swallows permission errors by default, which would let an
+    unreadable subtree vanish from both the plan and the verification -- so a
+    file that survived the wipe would still be reported as gone. Errors are
+    collected and surfaced instead.
     """
     entries: list[Path] = []
     dirs: list[Path] = []
+    errors: list[str] = []
+
+    def _record(exc: OSError) -> None:
+        errors.append(f"could not read {exc.filename}: {exc.strerror}")
+
     if root.is_symlink() or not root.exists():
-        return entries, dirs
+        return entries, dirs, errors
     if root.is_file():
-        return [root], dirs
-    for cur, dnames, fnames in os.walk(root, followlinks=False):
+        return [root], dirs, errors
+    for cur, dnames, fnames in os.walk(root, followlinks=False, onerror=_record):
         cur_p = Path(cur)
         for d in list(dnames):
             p = cur_p / d
@@ -46,7 +57,7 @@ def _walk(root: Path) -> tuple[list[Path], list[Path]]:
             else:
                 dirs.append(p)
         entries.extend(cur_p / f for f in fnames)
-    return entries, dirs
+    return entries, dirs, errors
 
 
 def _force_unlink(path: Path) -> None:
@@ -73,13 +84,15 @@ class PathWiper(Wiper):
         self.roots = tuple(roots)
         self.keep = keep
 
-    def _survey(self) -> tuple[list[Path], list[Path], list[Path]]:
-        """(doomed entries, doomed dirs, keep-skipped paths) across all roots."""
+    def _survey(self) -> tuple[list[Path], list[Path], list[Path], list[str]]:
+        """(doomed entries, doomed dirs, keep-skipped paths, errors)."""
         doomed: list[Path] = []
         doomed_dirs: list[Path] = []
         skipped: list[Path] = []
+        errors: list[str] = []
         for root in self.roots:
-            entries, dirs = _walk(root)
+            entries, dirs, errs = _walk(root)
+            errors.extend(errs)
             for p in entries:
                 (skipped if self.keep.protects(p) else doomed).append(p)
             for d in dirs:
@@ -87,10 +100,10 @@ class PathWiper(Wiper):
                     skipped.append(d)
                 else:
                     doomed_dirs.append(d)
-        return doomed, doomed_dirs, skipped
+        return doomed, doomed_dirs, skipped, errors
 
     def plan(self) -> WipePlan:
-        doomed, doomed_dirs, skipped = self._survey()
+        doomed, doomed_dirs, skipped, errors = self._survey()
         size = sum(p.stat().st_size for p in doomed if p.is_file() and not p.is_symlink())
         return WipePlan(
             scope=self.scope,
@@ -101,26 +114,47 @@ class PathWiper(Wiper):
             item_count=len(doomed) + len(doomed_dirs),
             bytes_total=size,
             reversible=True,  # core snapshots before committing
-            notes=tuple(f"keep-list skip: {p}" for p in sorted(map(str, skipped))),
+            complete=not errors,
+            notes=(
+                *(f"keep-list skip: {p}" for p in sorted(map(str, skipped))),
+                *(f"UNREADABLE: {e}" for e in errors),
+            ),
         )
 
     def commit(self) -> WipePlan:
-        doomed, doomed_dirs, skipped = self._survey()
+        doomed, doomed_dirs, skipped, errors = self._survey()
+        removed = 0
         for p in doomed:
-            _force_unlink(p)
+            try:
+                _force_unlink(p)
+                removed += 1
+            except OSError as exc:
+                # one stubborn file must not abort the rest of the wipe --
+                # and must not be counted as removed either
+                errors.append(f"could not remove {p}: {exc.strerror or exc}")
         # deepest first, so children fall before parents; kept content holds a dir up
         for d in sorted(doomed_dirs, key=lambda x: len(x.parts), reverse=True):
             with contextlib.suppress(OSError):
                 d.rmdir()
         return WipePlan(
             scope=self.scope,
-            description=f"removed {len(doomed)} file(s)/link(s) under: "
+            description=f"removed {removed} of {len(doomed)} file(s)/link(s) under: "
             + ", ".join(str(r) for r in self.roots),
-            item_count=len(doomed),
+            item_count=removed,
             reversible=True,
-            notes=tuple(f"keep-list skip: {p}" for p in sorted(map(str, skipped))),
+            complete=not errors,
+            notes=(
+                *(f"keep-list skip: {p}" for p in sorted(map(str, skipped))),
+                *(f"UNREADABLE: {e}" for e in errors),
+            ),
         )
 
     def verify(self) -> bool:
-        doomed, _dirs, _skipped = self._survey()
-        return not doomed
+        """True only if the tree was fully READABLE and nothing is left.
+
+        A subtree we could not read may still hold the very files the user
+        asked to destroy; reporting "verified" there is a false assurance of
+        deletion, which for a privacy tool is the worst possible lie.
+        """
+        doomed, _dirs, _skipped, errors = self._survey()
+        return not doomed and not errors

@@ -278,3 +278,37 @@ def test_opencode_credential_bearing_db_is_protected(
     assert (data / "mcp-auth.json").exists()
     assert (data / "worktree" / "proj" / "wip.py").read_text() == "uncommitted"
     assert (state / "password").read_text() == "daemon-secret"
+
+
+def test_claude_config_dir_relocation_is_honored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLAUDE_CONFIG_DIR moves the whole tree; a preset that only knew
+    ~/.claude would silently see -- and protect -- nothing."""
+    home = tmp_path / "home"
+    home.mkdir()
+    relocated = tmp_path / "elsewhere" / "claude"
+    proj = relocated / "projects" / "-p"
+    (proj / "memory").mkdir(parents=True)
+    (proj / "memory" / "MEMORY.md").write_text("DURABLE")
+    (proj / "sess.jsonl").write_text("history")
+    (relocated / "settings.json").write_text("{}")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(relocated))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    cfg_file = tmp_path / "c.toml"
+    cfg_file.write_text(
+        '[presets]\nenabled = ["claude-code"]\n'
+        f'\n[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    conf = load(cfg_file)
+    roots = {p.resolve() for p in conf.roots_for("session")}
+    assert (relocated / "projects").resolve() in roots, "relocated tree not detected"
+
+    PathWiper("session", conf.roots_for("session"), conf.keep).commit()
+    assert (proj / "memory" / "MEMORY.md").read_text() == "DURABLE"
+    assert not (proj / "sess.jsonl").exists()
+    assert (relocated / "settings.json").exists()

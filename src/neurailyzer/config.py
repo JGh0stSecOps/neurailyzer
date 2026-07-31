@@ -1,8 +1,8 @@
 """Configuration: wipe targets, the keep-list, and snapshot settings.
 
-Credentials are never stored here — remote wipers (when they land) read
-least-privilege, per-provider tokens from the environment / OS keyring at call
-time (see DESIGN §8).
+Credentials are never stored here: remote wipers read least-privilege,
+per-provider tokens from the ENVIRONMENT at call time (see DESIGN, Safety
+rails). Keyring sourcing is not implemented.
 
 Discovery order for the config file:
 
@@ -65,18 +65,32 @@ _PRECIOUS_HOME_DIRS: tuple[str, ...] = (
 )
 
 
+def _same(a: Path, b: Path) -> bool:
+    """Path equality that respects the filesystem's case rules."""
+    return _norm(a) == _norm(b)
+
+
+def _within(path: Path, ancestor: Path) -> bool:
+    return _same(path, ancestor) or any(_same(p, ancestor) for p in path.parents)
+
+
 def _forbidden_target_reason(path: Path) -> str | None:
-    """A target this broad is a config mistake, not a wipe request."""
+    """A target this broad is a config mistake, not a wipe request.
+
+    Comparisons are case-insensitive where the filesystem is: on macOS
+    ``~/downloads`` and ``~/Downloads`` are the same directory, so a
+    byte-exact check would wave the dangerous spelling straight through.
+    """
     home = Path.home().resolve()
-    if path == Path(path.anchor):
+    if _same(path, Path(path.anchor)):
         return "is a filesystem root"
-    if path == home:
+    if _same(path, home):
         return "is your home directory"
-    if path in home.parents:
+    if any(_same(home, p) or _same(p, home) for p in [home, *home.parents]) and _within(home, path):
         return "contains your home directory"
     for name in _PRECIOUS_HOME_DIRS:
         candidate = home / name
-        if path == candidate or candidate in path.parents:
+        if _within(path, candidate):
             return (
                 f"resolves inside {candidate} -- if a harness path links there, "
                 "wipe the harness's own directory instead"
@@ -330,6 +344,10 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
     if not isinstance(targets_raw, Mapping):
         raise ConfigError("[targets] must be a table")
     targets: dict[str, tuple[Path, ...]] = {}
+    # a symlinked target redirects the wipe somewhere else entirely -- the
+    # user must see that in the plan whether the path came from a preset or
+    # from their own [targets] block
+    symlinked_targets: list[tuple[str, str]] = []
     for scope, body in targets_raw.items():
         if scope == REMOTE_SCOPE:
             raise ConfigError(
@@ -348,7 +366,13 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
             )
         if not isinstance(body, Mapping):
             raise ConfigError(f"[targets.{scope}] must be a table")
-        paths = _parse_paths(f"targets.{scope}", body.get("paths", []))
+        raw_paths = body.get("paths", [])
+        paths = _parse_paths(f"targets.{scope}", raw_paths)
+        if isinstance(raw_paths, list):
+            for written, resolved in zip(raw_paths, paths, strict=False):
+                as_written = Path(os.path.expandvars(str(written))).expanduser()
+                if as_written != resolved:
+                    symlinked_targets.append((str(as_written), str(resolved)))
         for p in paths:
             reason = _forbidden_target_reason(p)
             if reason is not None:
@@ -361,7 +385,6 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         targets[scope] = paths
 
     # merge preset targets after explicit ones, with the same guards
-    symlinked_targets: list[tuple[str, str]] = []
     for scope, extra in preset_targets.items():
         if not extra:
             continue
