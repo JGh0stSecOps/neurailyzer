@@ -14,7 +14,7 @@
 
 ---
 
-> **Status: alpha — the core works.** `wipe` / `snapshot` / `restore` are implemented and end-to-end tested for **file-based state** (`session` and `sandbox` scopes) on Linux, macOS, and Windows, from the CLI, the MCP server, and the library. Adapters for `rag`, `models`, and `remote` are designed ([taxonomy](docs/WIPE-TAXONOMY.md)) but not yet shipped — the CLI tells you honestly when a scope has no adapter.
+> **Status: alpha — the core works.** `wipe` / `snapshot` / `restore` are implemented and end-to-end tested for **file-based state** (`session` and `sandbox` scopes) on Linux, macOS, and Windows, from the CLI, the MCP server, and the library. See [What's built · what needs building](#whats-built--what-needs-building) — the CLI tells you honestly when a scope has no adapter yet.
 
 ## The idea
 
@@ -53,9 +53,28 @@ Adapters are pluggable — implement the small `Wiper` contract for a store we d
 
 The honest line: you can't wipe a hosted model's training. You *can* wipe every bit of **state you created** around it — and that's what actually drifts.
 
+## What's built · what needs building
+
+**Built and tested today (v0.1):**
+
+- `wipe` / `snapshot` / `restore` for any **file-tree state** — session transcripts, chat DB files, JSONL history, sandbox scratch, temp dirs — with dry-run defaults, keep-list protection, and point-in-time rollback
+- Content-addressed snapshot store with retention pruning; restores are bit-identical and themselves reversible
+- CLI, MCP server (mcp 2.x, stdio + streamable-http), and library — one core, three surfaces
+- CI on Linux/macOS/Windows × Python 3.11–3.13, including an E2E smoke test that drives the real CLI
+
+**Needs building (adapters welcome — see [the taxonomy](docs/WIPE-TAXONOMY.md) and [CONTRIBUTING](CONTRIBUTING.md)):**
+
+- `rag` — vector-store wipers (Qdrant, Chroma, pgvector, Weaviate, Pinecone…)
+- `models` — runtime unload/KV-flush (Ollama, llama.cpp/llama-server, vLLM…)
+- `remote` — provider-side stored state, behind per-provider capability flags
+- Chat-store adapters that speak SQL schemas directly (Open WebUI, LibreChat…) rather than treating the DB as an opaque file
+- Scheduling/trigger hooks (end-of-task, cron) and snapshot encryption-at-rest
+
+Each of these is one `Wiper` implementation (`plan()` / `commit()` / `verify()`) — the safety rails, snapshots, CLI, and MCP surface come for free.
+
 ## Interfaces
 
-- **CLI** — `neurailyzer wipe --scope … · list-state · snapshot · restore --to <T>`
+- **CLI** — `neurailyzer list-state · wipe <scope…> · snapshot · restore --to <T>`
 - **MCP server** — the same verbs as MCP tools, so any agent (Claude, Codex, GPT-based, local…) can call it mid-workflow
 - **Library** — import the core and drive it from your own orchestrator
 
