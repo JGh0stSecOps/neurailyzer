@@ -37,6 +37,14 @@ vacuously:
 - **`_force_unlink` chmodded *through* a symlink**, rewriting the mode of a
   file outside the target tree. It now refuses rather than following.
 
+### Fixed — a harness dir linked elsewhere is skipped, not emptied
+- **`~/.claude/downloads -> ~/src/myrepo` emptied the repo.** The link lives
+  inside the harness directory, so it looked like the harness's own scratch;
+  a pre-release verifier destroyed a real git checkout this way. A preset
+  target that resolves outside everywhere its own preset legitimately claims
+  is now skipped and reported. A symlinked *harness root* (stow, chezmoi) is
+  still followed — that redirection is the user's intent, not an accident.
+
 ### Fixed — release blockers
 A pre-release readiness pass (three verifiers driving the real CLI in
 disposable fake HOMEs) found two blockers and two majors:

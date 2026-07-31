@@ -258,6 +258,12 @@ def wipe(
     scopes = core.expand_scopes([s.value for s in scope])
     label = ", ".join(s.value for s in scope)
 
+    for preset_id, written, actual in cfg.escaped_targets:
+        console.print(
+            f"[yellow]skipped:[/yellow] {escape(written)} points outside the "
+            f"{preset_id} directory (at [bold]{escape(actual)}[/bold]), so it "
+            "is not that harness's state -- left alone"
+        )
     for written, actual in cfg.symlinked_targets:
         console.print(
             f"[yellow]note:[/yellow] {escape(written)} is a symlink -- the wipe lands "
