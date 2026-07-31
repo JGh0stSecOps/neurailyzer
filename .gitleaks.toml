@@ -2,9 +2,14 @@
 [extend]
 useDefault = true
 
+# NOTE: no blanket path allowlist. README.md and docs/ were previously
+# exempt, which meant a real key pasted into a doc -- the single most common
+# way secrets leak -- would sail past the scan. Add narrow, commented
+# regexTarget/stopword entries here instead if a specific placeholder trips.
 [allowlist]
-description = "Allowlisted paths / placeholders"
-paths = [
-  '''(.*)?README\.md''',
-  '''docs/.*''',
+description = "Placeholders that are not secrets"
+regexes = [
+  # documented env-var NAMES and obvious placeholders, never values
+  '''(OPENAI|ANTHROPIC|XAI|VENICE)_API_KEY''',
+  '''sk-(test|ant-test)[a-z0-9-]*''',
 ]
