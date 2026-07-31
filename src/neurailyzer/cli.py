@@ -399,6 +399,21 @@ def restore(
         f"[bold]{mode}[/bold] restore --to {to!r} -> snapshot [bold]{snap.id}[/bold] "
         f"(taken {snap.taken_at.isoformat()})"
     )
+    if snap.remote_manifest:
+        # Remote deletes cannot be undone, so the ids are all this snapshot
+        # can offer. Reporting them is the whole reason it records them.
+        console.print(
+            "[yellow]note:[/yellow] this restore point also recorded remote "
+            "objects that were deleted. They CANNOT be restored -- listed "
+            "here only so you know what is gone:"
+        )
+        for provider, entry in sorted(snap.remote_manifest.items()):
+            ids = entry.get("item_ids") or []
+            console.print(f"  [bold]{provider}[/bold]: {len(ids)} object(s)")
+            for item in ids[:20]:
+                console.print(f"    [dim]{item}[/dim]")
+            if len(ids) > 20:
+                console.print(f"    [dim]... and {len(ids) - 20} more[/dim]")
     if commit:
         # a restore rewrites and deletes files, so the live-harness hazard
         # applies here too -- and a rewritten SQLite db under a live -wal is

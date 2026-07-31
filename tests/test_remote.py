@@ -352,3 +352,28 @@ def test_list_state_does_not_claim_zero_for_remote(tmp_path: Path) -> None:
     st = core.scope_status(cfg, "remote")
     assert not st.counted
     assert st.file_count == -1
+
+
+def test_restore_reports_the_remote_ids_it_cannot_bring_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, openai_key: None
+) -> None:
+    """The taxonomy promises restore reports what was removed remotely.
+
+    Those ids are all a snapshot can offer for an irreversible delete, so
+    surfacing them is the entire reason it records them.
+    """
+    from typer.testing import CliRunner
+
+    from neurailyzer.cli import app
+
+    api = FakeApi({"files": ["file-gone-forever"]})
+    monkeypatch.setattr(remote_mod, "http_json", api)
+    cfg = _cfg(tmp_path, '[remote.openai]\nsurfaces = ["files"]')
+    conf = load(cfg)
+    report = core.execute_wipe(conf, ["remote"])
+    assert report.snapshot is not None
+
+    result = CliRunner().invoke(app, ["--config", str(cfg), "restore", "--to", report.snapshot.id])
+    assert result.exit_code == 0, result.output
+    assert "CANNOT be restored" in result.stdout
+    assert "file-gone-forever" in result.stdout
