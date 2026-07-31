@@ -16,12 +16,29 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, core, liveness
-from .config import FILE_SCOPES, PENDING_SCOPES, REMOTE_SCOPE, load
+from .config import FILE_SCOPES, PENDING_SCOPES, REMOTE_SCOPE, Config, ConfigError, load
 from .snapshots import SnapshotError, SnapshotStore
 
 
 class McpUnavailable(RuntimeError):
     """The optional ``mcp`` dependency is not installed."""
+
+
+def _load_or_reason(config_path: str | None) -> tuple[Config | None, dict[str, Any] | None]:
+    """(config, refusal). A bad config is a structured answer, not a traceback.
+
+    An agent can act on ``{"ok": false, "reason": ...}``; it cannot act on an
+    exception surfaced as a tool error.
+    """
+    try:
+        return load(config_path), None
+    except ConfigError as exc:
+        return None, {
+            "ok": False,
+            "reason": f"configuration problem: {exc}",
+            "hint": "run `neurailyzer detect --enable` to create a config, "
+            "or point NEURAILYZER_CONFIG at an existing one",
+        }
 
 
 def build_server(config_path: str | None = None) -> Any:
@@ -43,8 +60,10 @@ def build_server(config_path: str | None = None) -> Any:
     )
 
     @server.tool(description="What state exists per scope, and what a wipe would affect.")
-    def nl_list_state() -> list[dict[str, Any]]:
-        cfg = load(config_path)
+    def nl_list_state() -> dict[str, Any]:
+        cfg, refusal = _load_or_reason(config_path)
+        if cfg is None:
+            return refusal or {"ok": False, "reason": "unknown configuration error"}
         out = []
         # REMOTE_SCOPE must appear here: an agent that cannot SEE the
         # scope can still name it, and it is the irreversible one.
@@ -63,11 +82,13 @@ def build_server(config_path: str | None = None) -> Any:
                     "irreversible": scope == REMOTE_SCOPE,
                 }
             )
-        return out
+        return {"ok": True, "scopes": out}
 
     @server.tool(description="Take a restore point of all configured state.")
     def nl_snapshot(label: str = "mcp") -> dict[str, Any]:
-        cfg = load(config_path)
+        cfg, refusal = _load_or_reason(config_path)
+        if cfg is None:
+            return refusal or {"ok": False, "reason": "unknown configuration error"}
         targets = {s: cfg.roots_for(s) for s in FILE_SCOPES if cfg.roots_for(s)}
         if not targets:
             return {"ok": False, "reason": "no targets configured"}
@@ -107,7 +128,9 @@ def build_server(config_path: str | None = None) -> Any:
                 "`neurailyzer wipe remote --commit` yourself. (commit=false to "
                 "see the plan.)",
             }
-        cfg = load(config_path)
+        cfg, refusal = _load_or_reason(config_path)
+        if cfg is None:
+            return refusal or {"ok": False, "reason": "unknown configuration error"}
         scopes = core.expand_scopes(scopes)
         if not commit:
             plans = core.plan_wipe(cfg, scopes)
@@ -160,7 +183,9 @@ def build_server(config_path: str | None = None) -> Any:
         )
     )
     def nl_restore(to: str, commit: bool = False) -> dict[str, Any]:
-        cfg = load(config_path)
+        cfg, refusal = _load_or_reason(config_path)
+        if cfg is None:
+            return refusal or {"ok": False, "reason": "unknown configuration error"}
         store = SnapshotStore(cfg.snapshot_dir)
         try:
             snap = store.resolve(to)

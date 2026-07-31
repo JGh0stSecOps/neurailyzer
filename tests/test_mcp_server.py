@@ -29,8 +29,9 @@ def test_all_four_verbs_registered(state: dict[str, Path]) -> None:
 
 def test_nl_list_state_reports_scopes(state: dict[str, Path]) -> None:
     server = build_server(str(state["config"]))
-    rows = _call(server, "nl_list_state", {})
-    by_scope = {r["scope"]: r for r in rows}
+    out = _call(server, "nl_list_state", {})
+    assert out["ok"] is True
+    by_scope = {r["scope"]: r for r in out["scopes"]}
     assert by_scope["session"]["configured"] is True
     assert by_scope["rag"]["adapter_available"] is False
 
@@ -129,9 +130,34 @@ def test_nl_list_state_shows_the_remote_scope(state: dict[str, Path]) -> None:
     one whose deletes nothing can undo."""
     cfg = state["config"]
     cfg.write_text(cfg.read_text() + '\n[remote.openai]\nsurfaces = ["files"]\n')
-    rows = _call(build_server(str(cfg)), "nl_list_state", {})
-    by_scope = {r["scope"]: r for r in rows}
+    out = _call(build_server(str(cfg)), "nl_list_state", {})
+    by_scope = {r["scope"]: r for r in out["scopes"]}
     assert "remote" in by_scope
     assert by_scope["remote"]["irreversible"] is True
     assert by_scope["remote"]["counted"] is False  # no network call was made
     assert by_scope["session"]["irreversible"] is False
+
+
+def test_a_broken_config_is_a_refusal_not_a_traceback(tmp_path: Path) -> None:
+    """An agent can act on {ok: false, reason}; it cannot act on a stack
+    trace surfaced as a tool error."""
+    missing = tmp_path / "nope" / "config.toml"
+    server = build_server(str(missing))
+    for tool, args in (
+        ("nl_list_state", {}),
+        ("nl_snapshot", {}),
+        ("nl_wipe", {"scopes": ["session"]}),
+        ("nl_restore", {"to": "2026-01-01T00:00"}),
+    ):
+        out = _call(server, tool, args)
+        assert out["ok"] is False, tool
+        assert "config" in out["reason"].lower(), tool
+        assert "hint" in out, tool
+
+
+def test_an_invalid_config_is_also_a_refusal(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.toml"
+    bad.write_text('[targets.rag]\npaths = ["/x"]\n')
+    out = _call(build_server(str(bad)), "nl_list_state", {})
+    assert out["ok"] is False
+    assert "no adapter" in out["reason"]
