@@ -6,6 +6,14 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed — MCP tool responses
+- All four tools answer the same envelope. A missing or invalid config is now
+  `{ok: false, reason, hint}` instead of an unhandled `ToolError` — an agent
+  can act on the former and not the latter. `nl_list_state` returns
+  `{ok, scopes}` and includes the **remote** scope (previously invisible,
+  since it iterated only the file and pending scopes), flagged
+  `irreversible` and `counted: false`.
+
 ### Fixed — keep-list correctness (the safety promise itself)
 A second adversarial pass found the keep-list could silently fail — the one
 bug class that loses data permanently. Each fix has a test that first proves
@@ -108,7 +116,10 @@ are fixed with a regression test each:
   overrides; dry-run is never blocked. Exit code 3.
 - **`integrations/`**: how to register NeurAIlyzer as an MCP tool inside
   Claude Code, Codex, Hermes, and Scion, plus a ready-to-use Scion agent
-  template (`scion-agent.yaml`).
+  template (`scion-agent.yaml`) whose setup creates the config it points at
+  and puts snapshots somewhere that outlives the agent's scratch.
+- `py.typed`, so downstream users get the inline type information (the
+  package is `mypy --strict` clean).
 - E2E smoke tests over a realistic multi-harness `$HOME`, driving the real
   CLI: detect → enable → dry-run → wipe → restore, plus the liveness block
   and a live MCP stdio handshake.
