@@ -30,6 +30,16 @@ vacuously:
   file outside the target tree. It now refuses rather than following.
 
 ### Fixed — the guard, on every surface
+- **A WAL sidecar was blamed on every enabled preset**, so one file under
+  Codex's tree reported Hermes as running — a harness the user may not even
+  have installed. Detection is scoped per preset, and hand-configured
+  `[targets]` paths stay guarded under a pseudo-preset so the scoping does
+  not leave them unchecked.
+- The sidecar walk **materialized an entire target tree per preset** — on a
+  real `~/.claude` that is gigabytes stat'd on every wipe. It stops early now.
+- **Exit codes are in `--help`**, not only the changelog: `0` ok, `1` ran but
+  did not fully succeed, `2` refused before doing anything, `3` refused
+  because a harness looks live (`--force` overrides).
 - **MCP had no liveness guard at all** — and it is the surface where an agent
   wipes mid-session, i.e. the guaranteed-live case. `nl_wipe` now runs the
   same check and takes `force`.
