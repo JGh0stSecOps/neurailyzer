@@ -60,6 +60,19 @@ class FileRecord:
 
 
 @dataclass(frozen=True)
+class DirRecord:
+    """One directory inside a snapshot -- with its mode.
+
+    Modes matter: recreating a 0700 directory at the umask default would turn
+    a private tree world-readable as a side effect of rolling back.
+    """
+
+    target: str
+    relpath: str
+    mode: int = 0o755
+
+
+@dataclass(frozen=True)
 class LinkRecord:
     """One symlink inside a snapshot -- the link itself, never what it points at."""
 
@@ -79,7 +92,7 @@ class Snapshot:
     targets: dict[str, tuple[str, ...]]  # scope -> absolute roots
     dir_roots: tuple[str, ...]  # roots that were directories when taken
     files: tuple[FileRecord, ...]
-    dirs: tuple[tuple[str, str], ...]  # (target root, relpath)
+    dirs: tuple[DirRecord, ...]
     links: tuple[LinkRecord, ...]
     #: provider -> what existed remotely at T. Remote deletes are one-way, so
     #: this is a RECORD, not restorable content (DESIGN 7).
@@ -154,7 +167,13 @@ def _parse_manifest(data: dict[str, Any]) -> Snapshot:
         dir_roots=tuple(data["dir_roots"]),
         remote_manifest=data.get("remote_manifest"),
         files=tuple(FileRecord(**f) for f in data["files"]),
-        dirs=tuple((d[0], d[1]) for d in data["dirs"]),
+        # tolerate the older 2-element form so pre-existing snapshots still load
+        dirs=tuple(
+            DirRecord(d[0], d[1], d[2] if len(d) > 2 else 0o755)
+            if isinstance(d, list)
+            else DirRecord(**d)
+            for d in data["dirs"]
+        ),
         links=tuple(LinkRecord(**ln) for ln in data["links"]),
     )
 
@@ -215,7 +234,7 @@ class SnapshotStore:
         snap_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(2)}-{slug}"
 
         files: list[FileRecord] = []
-        dirs: list[tuple[str, str]] = []
+        dirs: list[DirRecord] = []
         links: list[LinkRecord] = []
         dir_roots: set[str] = set()
         for _scope, roots in sorted(targets.items()):
@@ -238,7 +257,13 @@ class SnapshotStore:
                         )
                     )
                 for d in ds:
-                    dirs.append((str(root), d.relative_to(base).as_posix()))
+                    dirs.append(
+                        DirRecord(
+                            target=str(root),
+                            relpath=d.relative_to(base).as_posix(),
+                            mode=stat.S_IMODE(d.stat().st_mode),
+                        )
+                    )
                 for ln in lns:
                     links.append(
                         LinkRecord(
@@ -268,7 +293,7 @@ class SnapshotStore:
             "targets": {k: list(v) for k, v in snap.targets.items()},
             "dir_roots": list(snap.dir_roots),
             "files": [vars(f) for f in snap.files],
-            "dirs": [list(d) for d in snap.dirs],
+            "dirs": [vars(d) for d in snap.dirs],
             "links": [vars(ln) for ln in snap.links],
             "remote_manifest": snap.remote_manifest,
         }
@@ -351,7 +376,7 @@ class SnapshotStore:
         roots = [Path(r) for rs in snap.targets.values() for r in rs]
 
         wanted_files = {(f.target, f.relpath): f for f in snap.files}
-        wanted_dirs = set(snap.dirs)
+        wanted_dirs = {(d.target, d.relpath): d for d in snap.dirs}
         wanted_links = {(ln.target, ln.relpath): ln for ln in snap.links}
 
         # 1. remove what exists now but didn't at T (keep-list excepted)
@@ -403,10 +428,17 @@ class SnapshotStore:
             dest.write_bytes(blob.read_bytes())
             os.chmod(dest, stat.S_IMODE(rec.mode))
             os.utime(dest, (rec.mtime, rec.mtime))
-        for target, relpath in sorted(wanted_dirs):
+        for (target, relpath), drec in sorted(wanted_dirs.items()):
             dest = _dest(target, relpath, dir_roots)
-            if commit and not dest.is_dir():
+            if not commit:
+                continue
+            if not dest.is_dir():
                 dest.mkdir(parents=True, exist_ok=True)
+            if os.name != "nt":
+                # restore the recorded mode: recreating a 0700 tree at the
+                # umask default would leak it as a side effect of rolling back
+                with contextlib.suppress(OSError):
+                    os.chmod(dest, drec.mode)
         for (target, relpath), lrec in sorted(wanted_links.items()):
             dest = _dest(target, relpath, dir_roots)
             if dest.is_symlink() and os.readlink(dest) == lrec.link_to:

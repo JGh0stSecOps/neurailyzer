@@ -38,6 +38,9 @@ vacuously:
   file outside the target tree. It now refuses rather than following.
 
 ### Fixed — the snapshot store no longer leaks what it protects
+- **Restore recreated a `0700` directory as `0755`**, so rolling back turned
+  a private tree world-readable as a side effect. Directory modes are
+  recorded in the manifest and restored (older manifests still load).
 - **A `0600` credential was copied into a `0644` blob under a `0755` tree.**
   The store holds verbatim copies of whatever was in the wipe targets, so on
   a shared machine the hygiene tool itself disclosed the secrets it was asked

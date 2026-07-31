@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,7 +29,7 @@ def test_take_records_everything(state: dict[str, Path]) -> None:
     assert "threads/t1.jsonl" in names
     assert "chat.db" in names
     assert "deep/nested/artifact.bin" in names
-    assert any(d[1] == "deep/empty" for d in snap.dirs)  # empty dir recorded
+    assert any(d.relpath == "deep/empty" for d in snap.dirs)  # empty dir recorded
     if state["has_symlinks"]:
         assert any(ln.relpath == "sneaky-link" for ln in snap.links)  # link, not its target
     assert snap.total_bytes > 0
@@ -270,3 +271,23 @@ def test_the_snapshot_store_is_owner_only(state: dict[str, Path]) -> None:
         assert blob.stat().st_mode & 0o077 == 0, f"{blob} is readable by others"
     for manifest in store.manifest_dir.glob("*.json"):
         assert manifest.stat().st_mode & 0o077 == 0, "manifest lists every path"
+
+
+def test_directory_modes_survive_a_restore(state: dict[str, Path]) -> None:
+    """Recreating a 0700 tree at the umask default would turn a private
+    directory world-readable as a side effect of rolling back."""
+    if os.name == "nt":
+        pytest.skip("POSIX modes")
+    private = state["sandbox"] / "private"
+    private.mkdir()
+    private.chmod(0o700)
+    (private / "note.txt").write_text("secret")
+
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "with-a-private-dir")
+    shutil.rmtree(private)
+
+    store.restore(snap, KeepList())
+    assert private.is_dir()
+    assert private.stat().st_mode & 0o777 == 0o700, "restore widened the mode"
+    assert (private / "note.txt").read_text() == "secret"
