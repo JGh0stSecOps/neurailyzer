@@ -1,0 +1,105 @@
+"""The live-harness guard: advisory, honest, and never silently skipped."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+from typer.testing import CliRunner
+
+from neurailyzer import liveness
+from neurailyzer.cli import app
+
+runner = CliRunner()
+
+
+def test_wal_sidecar_is_a_liveness_signal(tmp_path: Path) -> None:
+    store = tmp_path / "state.db"
+    store.write_bytes(b"SQLite format 3\x00")
+    (tmp_path / "state.db-wal").write_bytes(b"wal")
+    result = liveness.check("hermes", (tmp_path,))
+    assert result.likely_running
+    assert any("write-ahead" in r for r in result.reasons)
+
+
+def test_clean_tree_is_not_flagged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(liveness, "_running_process_hits", lambda _f: [])
+    (tmp_path / "sessions.jsonl").write_text("{}\n")
+    assert not liveness.check("hermes", (tmp_path,)).likely_running
+
+
+def test_process_scan_failure_is_not_a_false_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # if we can't ask the OS, we must not claim something is running
+    monkeypatch.setattr(liveness.shutil, "which", lambda _name: None)
+    assert liveness._running_process_hits(("hermes",)) == []
+
+
+def test_unknown_preset_has_no_hints(tmp_path: Path) -> None:
+    assert not liveness.check("not-a-harness", (tmp_path,)).likely_running
+
+
+def test_check_enabled_returns_only_positives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(liveness, "_running_process_hits", lambda _f: [])
+    (tmp_path / "state.db-shm").write_bytes(b"shm")
+    hits = liveness.check_enabled(["hermes", "codex"], (tmp_path,))
+    assert {h.preset_id for h in hits} == {"hermes", "codex"}  # both see the sidecar
+    monkeypatch.setattr(liveness, "_open_wal_sidecars", lambda _r: [])
+    assert liveness.check_enabled(["hermes"], (tmp_path,)) == []
+
+
+# -- CLI wiring -------------------------------------------------------------
+
+
+@pytest.fixture
+def live_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    (claude / "projects" / "-p").mkdir(parents=True)
+    (claude / "projects" / "-p" / "s.jsonl").write_text("{}\n")
+    (claude / "projects" / "-p" / "state.db-wal").write_bytes(b"live")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        '[presets]\nenabled = ["claude-code"]\n'
+        f'\n[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    return {"config": cfg, "claude": claude}
+
+
+def test_wipe_refuses_when_harness_looks_live(live_config: dict[str, Any]) -> None:
+    result = runner.invoke(
+        app, ["--config", str(live_config["config"]), "wipe", "session", "--commit"]
+    )
+    assert result.exit_code == 3
+    # nothing was touched
+    assert (live_config["claude"] / "projects" / "-p" / "s.jsonl").exists()
+
+
+def test_force_overrides_the_guard(live_config: dict[str, Any]) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(live_config["config"]),
+            "wipe",
+            "session",
+            "--commit",
+            "--force",
+        ],
+    )
+    assert result.exit_code == 0
+    assert not (live_config["claude"] / "projects" / "-p" / "s.jsonl").exists()
+
+
+def test_dry_run_is_never_blocked_by_the_guard(live_config: dict[str, Any]) -> None:
+    # a plan mutates nothing, so liveness is irrelevant to it
+    result = runner.invoke(app, ["--config", str(live_config["config"]), "wipe", "session"])
+    assert result.exit_code == 0
+    assert "DRY-RUN" in result.stdout

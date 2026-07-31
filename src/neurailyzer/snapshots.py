@@ -74,6 +74,9 @@ class Snapshot:
     files: tuple[FileRecord, ...]
     dirs: tuple[tuple[str, str], ...]  # (target root, relpath)
     links: tuple[LinkRecord, ...]
+    #: provider -> what existed remotely at T. Remote deletes are one-way, so
+    #: this is a RECORD, not restorable content (DESIGN 7).
+    remote_manifest: dict[str, Any] | None = None
 
     @property
     def file_count(self) -> int:
@@ -142,6 +145,7 @@ def _parse_manifest(data: dict[str, Any]) -> Snapshot:
         scopes=tuple(data["scopes"]),
         targets={k: tuple(v) for k, v in data["targets"].items()},
         dir_roots=tuple(data["dir_roots"]),
+        remote_manifest=data.get("remote_manifest"),
         files=tuple(FileRecord(**f) for f in data["files"]),
         dirs=tuple((d[0], d[1]) for d in data["dirs"]),
         links=tuple(LinkRecord(**ln) for ln in data["links"]),
@@ -176,7 +180,12 @@ class SnapshotStore:
 
     # -- take -----------------------------------------------------------------
 
-    def take(self, targets: dict[str, tuple[Path, ...]], label: str) -> Snapshot:
+    def take(
+        self,
+        targets: dict[str, tuple[Path, ...]],
+        label: str,
+        remote_manifest: dict[str, Any] | None = None,
+    ) -> Snapshot:
         """Record every file/dir/symlink under the target roots."""
         self.blob_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -229,6 +238,7 @@ class SnapshotStore:
             files=tuple(files),
             dirs=tuple(dirs),
             links=tuple(links),
+            remote_manifest=remote_manifest,
         )
         manifest = {
             "id": snap.id,
@@ -240,6 +250,7 @@ class SnapshotStore:
             "files": [vars(f) for f in snap.files],
             "dirs": [list(d) for d in snap.dirs],
             "links": [vars(ln) for ln in snap.links],
+            "remote_manifest": snap.remote_manifest,
         }
         path = self.manifest_dir / f"{snap_id}.json"
         path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
