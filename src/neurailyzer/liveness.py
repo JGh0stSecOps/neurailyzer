@@ -42,6 +42,12 @@ PID_SOURCES: dict[str, tuple[str, ...]] = {
         "$GROK_HOME/leader*.lock",
         "~/.grok/leader*.lock",
     ),
+    "opencode": (
+        "$XDG_STATE_HOME/opencode/server.json",
+        "~/.local/state/opencode/server.json",
+        "$XDG_STATE_HOME/opencode/locks/*.lock/meta.json",
+        "~/.local/state/opencode/locks/*.lock/meta.json",
+    ),
 }
 
 #: process-name fragments per preset id -- the WEAK fallback, used only where

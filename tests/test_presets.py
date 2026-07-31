@@ -189,3 +189,92 @@ def test_grok_install_paths_are_protected(tmp_path: Path, monkeypatch: pytest.Mo
     assert (grok / "bin").is_dir()
     assert (grok / "auth.json").read_text() == '{"token":"KEEP"}'
     assert (grok / "memory" / "MEMORY.md").exists()
+
+
+def test_grok_worktrees_are_never_wiped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Agent worktrees can hold uncommitted work -- the same rule as Scion."""
+    home = tmp_path / "home"
+    grok = home / ".grok"
+    (grok / "sessions" / "s").mkdir(parents=True)
+    (grok / "sessions" / "s" / "chat_history.jsonl").write_text("{}\n")
+    (grok / "worktrees" / "repo" / "sess").mkdir(parents=True)
+    (grok / "worktrees" / "repo" / "sess" / "unmerged.py").write_text("work in progress")
+    (grok / "worktrees.db").write_bytes(b"SQLite format 3\x00")
+    (grok / "upload_queue").mkdir()
+    (grok / "upload_queue" / "pending.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        '[presets]\nenabled = ["grok-build"]\n'
+        f'\n[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    conf = load(cfg)
+    for scope in ("session", "sandbox"):
+        PathWiper(scope, conf.roots_for(scope), conf.keep).commit()
+
+    assert not (grok / "sessions" / "s" / "chat_history.jsonl").exists()
+    assert (grok / "worktrees" / "repo" / "sess" / "unmerged.py").read_text() == "work in progress"
+    assert (grok / "worktrees.db").exists()
+    assert (grok / "upload_queue" / "pending.json").exists()
+
+
+def test_opencode_credential_bearing_db_is_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """opencode.db is BOTH the session store and a credential store.
+
+    File-level deletion would clear chats and take provider credentials with
+    them, so this release protects the DB and wipes only what it can wipe
+    safely. If this test ever fails, the wiper has become a credential
+    shredder.
+    """
+    home = tmp_path / "home"
+    data = home / ".local" / "share" / "opencode"
+    state = home / ".local" / "state" / "opencode"
+    (data / "storage" / "session_x").mkdir(parents=True)
+    (data / "storage" / "session_x" / "msg.json").write_text("{}")
+    (data / "project").mkdir()
+    (data / "project" / "legacy.json").write_text("{}")
+    (data / "opencode.db").write_bytes(b"SQLite format 3\x00credentials+sessions")
+    (data / "opencode.db-wal").write_bytes(b"wal")
+    (data / "opencode-nightly.db").write_bytes(b"SQLite format 3\x00channel build")
+    (data / "auth.json").write_text('{"anthropic":"KEEP"}')
+    (data / "mcp-auth.json").write_text('{"server":"KEEP"}')
+    (data / "worktree" / "proj").mkdir(parents=True)
+    (data / "worktree" / "proj" / "wip.py").write_text("uncommitted")
+    state.mkdir(parents=True)
+    (state / "password").write_text("daemon-secret")
+    (home / ".cache" / "opencode").mkdir(parents=True)
+    (home / ".cache" / "opencode" / "blob").write_text("cached")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    for var in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        '[presets]\nenabled = ["opencode"]\n'
+        f'\n[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    conf = load(cfg)
+    for scope in ("session", "sandbox"):
+        PathWiper(scope, conf.roots_for(scope), conf.keep).commit()
+
+    # legacy JSON session trees and caches go
+    assert not (data / "storage" / "session_x" / "msg.json").exists()
+    assert not (data / "project" / "legacy.json").exists()
+    assert not (home / ".cache" / "opencode" / "blob").exists()
+    # every credential-bearing or work-bearing path survives
+    assert (data / "opencode.db").exists(), "credential-bearing DB was deleted"
+    assert (data / "opencode.db-wal").exists()
+    assert (data / "opencode-nightly.db").exists(), "channel DB glob failed"
+    assert (data / "auth.json").read_text() == '{"anthropic":"KEEP"}'
+    assert (data / "mcp-auth.json").exists()
+    assert (data / "worktree" / "proj" / "wip.py").read_text() == "uncommitted"
+    assert (state / "password").read_text() == "daemon-secret"

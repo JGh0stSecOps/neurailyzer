@@ -161,8 +161,41 @@ GROK_BUILD = Preset(
     sandbox=(
         "$GROK_HOME/logs",
         "~/.grok/logs",
+        "$GROK_HOME/memtrace",
+        "~/.grok/memtrace",
+        "$GROK_HOME/debug",
+        "~/.grok/debug",
+        "$GROK_HOME/marketplace-cache",
+        "~/.grok/marketplace-cache",
     ),
     keep=(
+        # AGENT WORKTREES: may hold uncommitted work. Never touched -- same
+        # rule as Scion. Use `grok`'s own worktree commands to reclaim these.
+        "~/.grok/worktrees",
+        "~/.grok/worktrees.db*",
+        "~/.grok/worktree_pool",
+        "$GROK_HOME/worktrees",
+        "$GROK_HOME/worktrees.db*",
+        "$GROK_HOME/worktree_pool",
+        # pending server uploads -- dropping them loses queued data silently
+        "~/.grok/upload_queue",
+        "$GROK_HOME/upload_queue",
+        # user-authored extension points
+        "~/.grok/personas",
+        "~/.grok/rules",
+        "~/.grok/workflows",
+        "~/.grok/hooks",
+        "~/.grok/installed-plugins",
+        "~/.grok/vendor",
+        "~/.grok/pager.toml",
+        "~/.grok/sandbox.toml",
+        "~/.grok/lsp.json",
+        "$GROK_HOME/personas",
+        "$GROK_HOME/rules",
+        "$GROK_HOME/workflows",
+        "$GROK_HOME/hooks",
+        "$GROK_HOME/installed-plugins",
+        "$GROK_HOME/vendor",
         # credentials + their advisory flocks
         "~/.grok/auth.json",
         "~/.grok/auth.json.lock",
@@ -429,6 +462,69 @@ VENICE_WEB = Preset(
 #: Only source-verified presets are enabled. `verified=False` definitions stay
 #: in the module (as documentation of what still needs confirming) but never
 #: reach a user's wipe plan -- enforced by the assertion below.
+OPENCODE = Preset(
+    id="opencode",
+    name="opencode",
+    vendor="anomalyco (open source)",
+    # XDG layout on every OS, including Windows (~/.local/share/opencode).
+    detect=(
+        "$XDG_DATA_HOME/opencode",
+        "~/.local/share/opencode",
+    ),
+    session=(
+        # The legacy JSON trees are safe to remove wholesale.
+        #
+        # NOTE the deliberate omission: <data>/opencode*.db is BOTH the
+        # session store AND a credential store (its `credential` table holds
+        # connector credentials), so unlinking it to clear chats would also
+        # destroy those credentials. Clearing sessions there needs row-level
+        # deletes, which this release's file wipers cannot do -- so the DB is
+        # protected instead. See notes.
+        "$XDG_DATA_HOME/opencode/storage",
+        "~/.local/share/opencode/storage",
+        "$XDG_DATA_HOME/opencode/project",
+        "~/.local/share/opencode/project",
+    ),
+    sandbox=(
+        "$XDG_CACHE_HOME/opencode",
+        "~/.cache/opencode",
+        "$TMPDIR/opencode",
+        "$XDG_STATE_HOME/opencode/locks",
+        "~/.local/state/opencode/locks",
+    ),
+    keep=(
+        # credentials, and the DB that doubles as one
+        "$XDG_DATA_HOME/opencode/auth.json",
+        "~/.local/share/opencode/auth.json",
+        "$XDG_DATA_HOME/opencode/mcp-auth.json",
+        "~/.local/share/opencode/mcp-auth.json",
+        "$XDG_DATA_HOME/opencode/opencode*.db*",
+        "~/.local/share/opencode/opencode*.db*",
+        # daemon shared secret: wiping it orphans a running server
+        "$XDG_STATE_HOME/opencode/password",
+        "~/.local/state/opencode/password",
+        "$XDG_STATE_HOME/opencode/server.json",
+        "~/.local/state/opencode/server.json",
+        # managed git worktrees: real checkouts, possibly uncommitted
+        "$XDG_DATA_HOME/opencode/worktree",
+        "~/.local/share/opencode/worktree",
+        # user configuration (wiping it silently un-configures every provider)
+        "$XDG_CONFIG_HOME/opencode",
+        "~/.config/opencode",
+        "~/.opencode",
+    ),
+    notes="Layout source-verified against anomalyco/opencode @ da59457 "
+    "(core/src/global.ts XDG roots, database/database.ts, auth/index.ts, "
+    "cli/services/daemon.ts). XDG paths apply on every OS including Windows. "
+    "IMPORTANT: opencode*.db is both the session store and a credential "
+    "store, so this preset PROTECTS it and wipes only the legacy JSON trees "
+    "plus caches -- clearing chats from the DB needs row-level deletes (a "
+    "future sqlite wiper), and file-level deletion would take credentials "
+    "with it. Liveness is read from <state>/server.json. Shared sessions "
+    "pushed to opncd.ai are server-side and unaffected by any local wipe.",
+)
+
+
 REGISTRY: dict[str, Preset] = {
     p.id: p
     for p in (
@@ -437,10 +533,8 @@ REGISTRY: dict[str, Preset] = {
         GROK_BUILD,
         HERMES,
         SCION,
+        OPENCODE,
         VENICE_WEB,
-        # OpenCode lands once its layout is source-verified -- a guessed
-        # path in a wiper is a destructive bug, so unverified beats
-        # plausible (enforced by the check below).
     )
 }
 
