@@ -31,7 +31,8 @@ def test_detects_fake_role_tags(tmp_path: Path) -> None:
 
 def test_detects_invisible_unicode(tmp_path: Path) -> None:
     f = tmp_path / "hidden.txt"
-    f.write_text("normal text​‮ with smuggled characters\n")
+    # explicit utf-8: Windows' locale default (cp1252) can't encode these chars
+    f.write_text("normal text​‮ with smuggled characters\n", encoding="utf-8")
     findings = scan_injection.scan_file(f)
     assert any(x.kind == "invisible" for x in findings)
 
