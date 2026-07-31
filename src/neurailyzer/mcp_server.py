@@ -89,7 +89,7 @@ def build_server(config_path: str | None = None) -> Any:
         if "all" in scopes:
             return {
                 "ok": False,
-                "reason": "scope 'all' is refused over MCP — a factory reset "
+                "reason": "scope 'all' is refused over MCP -- a factory reset "
                 "requires a human at the CLI (--confirm all).",
             }
         cfg = load(config_path)

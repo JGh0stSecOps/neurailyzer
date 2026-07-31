@@ -1,4 +1,4 @@
-"""NeurAIlyzer CLI — state hygiene for AI agents.
+"""NeurAIlyzer CLI -- state hygiene for AI agents.
 
 Safety-first by construction: ``wipe`` and ``restore`` are **dry-run by
 default**; ``--commit`` is required to change anything, and a snapshot is taken
@@ -96,14 +96,14 @@ def list_state(
         table.add_row(
             s.value,
             status,
-            "\n".join(st.roots) or "—",
-            str(st.file_count) if st.configured and st.available else "—",
-            str(st.total_bytes) if st.configured and st.available else "—",
-            str(st.kept_count) if st.configured and st.available else "—",
+            "\n".join(st.roots) or "--",
+            str(st.file_count) if st.configured and st.available else "--",
+            str(st.total_bytes) if st.configured and st.available else "--",
+            str(st.kept_count) if st.configured and st.available else "--",
         )
     console.print(table)
     if cfg.source is None:
-        console.print("[dim]no config file found — nothing is targeted. see README §Config.[/dim]")
+        console.print("[dim]no config file found -- nothing is targeted. see README Config.[/dim]")
 
 
 @app.command()
@@ -135,7 +135,7 @@ def snapshot(
         return
     targets = {s: cfg.roots_for(s) for s in FILE_SCOPES if cfg.roots_for(s)}
     if not targets:
-        console.print("[yellow]nothing to snapshot[/yellow] — no targets configured.")
+        console.print("[yellow]nothing to snapshot[/yellow] -- no targets configured.")
         raise typer.Exit(code=1)
     snap = store.take(targets, label)
     store.prune(cfg.retention)
@@ -181,7 +181,7 @@ def wipe(
         cfg, scopes, take_snapshot=not no_snapshot, label=f"pre-wipe-{label.replace(', ', '-')}"
     )
     if not report.plans:
-        console.print("[yellow]nothing to wipe[/yellow] — no configured targets in scope.")
+        console.print("[yellow]nothing to wipe[/yellow] -- no configured targets in scope.")
         return
     if no_snapshot:
         console.print("[red bold]--no-snapshot: this wipe has NO restore point.[/red bold]")
@@ -193,7 +193,7 @@ def wipe(
     if bad:
         err_console.print(f"[red]verify FAILED[/red] for: {', '.join(bad)}")
         raise typer.Exit(code=1)
-    console.print("[green]verified[/green] — state matches the plan.")
+    console.print("[green]verified[/green] -- state matches the plan.")
 
 
 def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
@@ -201,7 +201,7 @@ def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
     for p in plans:
         covered.add(p.scope)
         console.print(
-            f"  • [bold]{p.scope}[/bold]: {p.description} "
+            f"  - [bold]{p.scope}[/bold]: {p.description} "
             f"[dim]({p.item_count} item(s), {p.bytes_total} bytes)[/dim]"
         )
         for note in p.notes:
@@ -210,9 +210,9 @@ def _print_plans(plans: list[WipePlan], scopes: list[str]) -> None:
         if s in covered:
             continue
         if s in FILE_SCOPES:
-            console.print(f"  • {s}: [yellow]not configured — skipped[/yellow]")
+            console.print(f"  - {s}: [yellow]not configured -- skipped[/yellow]")
         else:
-            console.print(f"  • {s}: [dim]no adapter yet — skipped[/dim]")
+            console.print(f"  - {s}: [dim]no adapter yet -- skipped[/dim]")
 
 
 @app.command()
@@ -229,12 +229,12 @@ def restore(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2) from exc
     if snap is None:
-        err_console.print(f"[red]no snapshot at or before[/red] {to!r} — see snapshot --list")
+        err_console.print(f"[red]no snapshot at or before[/red] {to!r} -- see snapshot --list")
         raise typer.Exit(code=1)
 
     mode = "COMMIT" if commit else "DRY-RUN"
     console.print(
-        f"[bold]{mode}[/bold] restore --to {to!r} → snapshot [bold]{snap.id}[/bold] "
+        f"[bold]{mode}[/bold] restore --to {to!r} -> snapshot [bold]{snap.id}[/bold] "
         f"(taken {snap.taken_at.isoformat()})"
     )
     if commit:
@@ -279,7 +279,7 @@ def mcp_serve(
         "stdio", "--transport", "-t", help="stdio (default) or streamable-http."
     ),
 ) -> None:
-    """Serve NeurAIlyzer's verbs as MCP tools (nl_list_state, nl_snapshot, …)."""
+    """Serve NeurAIlyzer's verbs as MCP tools (nl_list_state, nl_snapshot, ...)."""
     from .mcp_server import serve
 
     serve(config_path=_state["config"], transport=transport)

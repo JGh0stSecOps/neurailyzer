@@ -1,4 +1,4 @@
-"""Local adapters — file-tree state (``session`` and ``sandbox`` scopes).
+"""Local adapters -- file-tree state (``session`` and ``sandbox`` scopes).
 
 ``PathWiper`` resets the file trees a scope's config points at. Safety
 properties, uniform across platforms:
@@ -8,7 +8,7 @@ properties, uniform across platforms:
 - **symlinks**: a link is removed as a link. The wiper never follows one, so a
   sandbox symlink aimed at ``$HOME`` can't turn into a home wipe.
 - **read-only files** (the Windows attribute) are cleared and removed.
-- the target roots themselves survive — a wipe empties them, it doesn't
+- the target roots themselves survive -- a wipe empties them, it doesn't
   delete the workspace.
 """
 

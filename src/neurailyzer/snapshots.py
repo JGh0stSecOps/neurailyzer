@@ -12,7 +12,7 @@ itself, never its destination). Snapshot ids are filesystem-safe on every
 platform (UTC compact timestamp — no colons, which Windows forbids).
 
 ``restore`` is a true rollback: it rewrites recorded files, recreates dirs and
-links, and removes anything present now that the snapshot doesn't know —
+links, and removes anything present now that the snapshot doesn't know --
 except keep-list entries, which are skipped and reported.
 """
 
@@ -54,7 +54,7 @@ class FileRecord:
 
 @dataclass(frozen=True)
 class LinkRecord:
-    """One symlink inside a snapshot — the link itself, never what it points at."""
+    """One symlink inside a snapshot -- the link itself, never what it points at."""
 
     target: str
     relpath: str
@@ -157,7 +157,12 @@ def parse_point_in_time(raw: str) -> datetime:
             f"--to {raw!r} is neither a snapshot id nor an ISO-8601 time (e.g. 2026-07-09T04:00)"
         ) from exc
     if dt.tzinfo is None:
-        dt = dt.astimezone()  # interpret as local time
+        try:
+            dt = dt.astimezone()  # interpret as local time
+        except (OSError, OverflowError, ValueError):
+            # Windows localtime() can't map far-future/past dates -- outside
+            # any plausible DST question, so plain UTC is the right reading.
+            dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
 
 
@@ -266,7 +271,7 @@ class SnapshotStore:
         return snaps
 
     def resolve(self, to: str) -> Snapshot | None:
-        """*to* is a snapshot id, or a time — nearest snapshot at/before it."""
+        """*to* is a snapshot id, or a time -- nearest snapshot at/before it."""
         snaps = self.list()
         for s in snaps:
             if s.id == to:
@@ -330,7 +335,7 @@ class SnapshotStore:
             if not commit:
                 continue
             if not blob.exists():
-                plan.errors.append(f"missing blob for {dest} ({rec.sha256[:12]}…)")
+                plan.errors.append(f"missing blob for {dest} ({rec.sha256[:12]}...)")
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.exists() or dest.is_symlink():

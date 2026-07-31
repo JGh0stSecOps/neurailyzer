@@ -74,7 +74,7 @@ class KeepList:
 
 @dataclass(frozen=True)
 class Config:
-    """NeurAIlyzer configuration (see README §Configuration)."""
+    """NeurAIlyzer configuration (see README Configuration)."""
 
     keep: KeepList = field(default_factory=KeepList)
     #: scope -> absolute target roots. Only FILE_SCOPES appear here in v0.1.
@@ -118,7 +118,7 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
     for scope, body in targets_raw.items():
         if scope in PENDING_SCOPES:
             raise ConfigError(
-                f"[targets.{scope}] has no adapter in this release — "
+                f"[targets.{scope}] has no adapter in this release -- "
                 f"supported scopes today: {', '.join(FILE_SCOPES)}"
             )
         if scope not in FILE_SCOPES:
@@ -135,7 +135,7 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                 raise ConfigError(f"[targets.{scope}] refusing target {p}: {reason}")
             if p == snapshot_dir or p in snapshot_dir.parents:
                 raise ConfigError(
-                    f"[targets.{scope}] {p} contains the snapshot store {snapshot_dir} — "
+                    f"[targets.{scope}] {p} contains the snapshot store {snapshot_dir} -- "
                     "snapshots must live outside every wipe target"
                 )
         targets[scope] = paths

@@ -97,7 +97,9 @@ def test_restore_round_trip_bit_identical(state: dict[str, Path]) -> None:
     assert (state["sandbox"] / "deep" / "empty").is_dir()  # empty dir came back
     if state["has_symlinks"]:
         link = state["sandbox"] / "sneaky-link"
-        assert link.is_symlink() and os.readlink(link) == str(state["victim"])
+        assert link.is_symlink()
+        # compare by identity, not string: Windows readlink returns \\?\-prefixed paths
+        assert os.path.samefile(link, state["victim"])
 
 
 def test_restore_dry_run_mutates_nothing(state: dict[str, Path]) -> None:
