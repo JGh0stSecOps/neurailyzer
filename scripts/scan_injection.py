@@ -80,6 +80,28 @@ SLOP_PATTERNS: list[str] = [
 SKIP_SUFFIXES: frozenset[str] = frozenset(
     {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz", ".woff", ".woff2"}
 )
+# Directories that are never OUR content. CI passes an explicit changed-file
+# list so it never walks these, but a contributor running `scan_injection.py .`
+# would otherwise get a screenful of findings from their dependencies -- and a
+# guard that cries wolf is a guard people stop reading.
+SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        ".tox",
+        ".nox",
+        "node_modules",
+        "__pycache__",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "site-packages",
+        "dist",
+        "build",
+        ".eggs",
+    }
+)
 # our own detector strings would otherwise self-flag
 SELF_EXEMPT: frozenset[str] = frozenset(
     {"scan_injection.py", "test_scan_injection.py", "CONTRIBUTING.md"}
@@ -97,15 +119,19 @@ class Finding:
     detail: str
 
 
+def _skipped(path: Path) -> bool:
+    return any(part in SKIP_DIRS for part in path.parts)
+
+
 def _iter_files(paths: list[str]) -> list[Path]:
     out: list[Path] = []
     for p in paths:
         path = Path(p)
         if path.is_dir():
-            out.extend(f for f in path.rglob("*") if f.is_file())
+            out.extend(f for f in path.rglob("*") if f.is_file() and not _skipped(f))
         elif path.is_file():
             out.append(path)
-    return [f for f in out if f.suffix.lower() not in SKIP_SUFFIXES and ".git/" not in str(f)]
+    return [f for f in out if f.suffix.lower() not in SKIP_SUFFIXES]
 
 
 def scan_file(path: Path) -> list[Finding]:
