@@ -1,11 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="520" height="152" viewBox="0 0 520 152" role="img" aria-label="NeurAIlyzer">
   <defs>
+    <!-- chrome tuned for a WHITE background: the highlight band is narrower and
+         the surrounding steel much darker, so the A and the device read on
+         their own without a heavy keyline closing the gap between them. -->
     <linearGradient id="metal" gradientUnits="userSpaceOnUse" x1="0" y1="76" x2="0" y2="118">
-      <stop offset="0" stop-color="#8795a5"/>
-      <stop offset="0.42" stop-color="#cdd7e0"/>
-      <stop offset="0.5" stop-color="#334155"/>
-      <stop offset="0.58" stop-color="#5b6b7d"/>
-      <stop offset="1" stop-color="#9aa7b5"/>
+      <stop offset="0" stop-color="#5a6675"/>
+      <stop offset="0.38" stop-color="#b8c4d0"/>
+      <stop offset="0.5" stop-color="#243244"/>
+      <stop offset="0.6" stop-color="#4a5867"/>
+      <stop offset="1" stop-color="#6b7787"/>
     </linearGradient>
     <linearGradient id="red" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#7f1d1d"/>
@@ -35,6 +38,10 @@
   <style>
     .base { fill: #0f172a; }
     text  { font-family: 'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif; font-weight: 800; letter-spacing: -1.5px; }
+    /* The keyline is painted UNDER the fill and kept hairline-thin. A heavier
+       stroke straddles the path and grows every glyph outward, which closes
+       the gap between the A and the device and fuses them into one shape. */
+    .keyline { paint-order: stroke fill; stroke: #0d1117; stroke-width: 1.1; stroke-linejoin: round; }
     #burst { transform-box: fill-box; transform-origin: center; animation: burst 4.4s ease-out infinite; }
     .redlight { animation: breathe 4.4s ease-in-out infinite; }
     .redflash { opacity: 0; animation: whiteflash 4.4s ease-out infinite; }
@@ -45,17 +52,21 @@
     @keyframes sweep { 0%,83% { opacity:0; transform:translateX(70px); } 86% { opacity:1; } 88% { transform:translateX(0px); } 91% { opacity:1; } 94% { opacity:0; transform:translateX(-70px); } 100% { opacity:0; transform:translateX(-70px); } }
   </style>
 
-  <text x="260" y="118" font-size="60" text-anchor="middle" fill="none" stroke="#0d1117" stroke-width="3.2" stroke-linejoin="round"><tspan stroke="none">Neur</tspan><tspan>A</tspan><tspan dx="16" stroke="none">lyzer</tspan></text>
-  <text x="260" y="118" font-size="60" text-anchor="middle"><tspan class="base">Neur</tspan><tspan fill="url(#metal)">A</tspan><tspan class="base" dx="16">lyzer</tspan></text>
+  <!-- wordmark; identical geometry to the dark variant so both read as the
+       same logo. Only the A carries a hairline keyline (chrome on white). -->
+  <text x="260" y="118" font-size="60" text-anchor="middle"><tspan class="base">Neur</tspan><tspan class="keyline" fill="url(#metal)">A</tspan><tspan class="base" dx="16">lyzer</tspan></text>
   <!-- trademark, placed absolutely so the wordmark's centered spacing is untouched -->
   <text x="415" y="84" font-size="19" font-weight="600" class="base" opacity="0.9">™</text>
 
-  <g transform="translate(278,0)">
+  <!-- the "I" = a neuralyzer, sized/placed like a capital I (cap-top to baseline).
+       x=284 centres the 14-wide tube in the 19.5-wide slot the A (ends 274) and
+       "lyzer" (starts 293.5) leave. At 278 it overlapped the A's right leg by 3,
+       which the dark variant hid (same chrome, no contour) and any keyline in
+       the light variant exposed as the device welded onto the A. -->
+  <g transform="translate(284,0)">
     <ellipse class="redlight" cx="0" cy="83" rx="8" ry="6" fill="#ef4444" filter="url(#soft)"/>
-    <rect x="-7" y="78" width="14" height="40" rx="2.5" fill="none" stroke="#0d1117" stroke-width="3"/>
-    <path d="M-5.5 76 a5.5 3 0 0 1 11 0 v2 h-11 z" fill="none" stroke="#0d1117" stroke-width="3"/>
-    <rect x="-7" y="78" width="14" height="40" rx="2.5" fill="url(#metal)"/>
-    <path d="M-5.5 76 a5.5 3 0 0 1 11 0 v2 h-11 z" fill="url(#metal)"/>
+    <rect class="keyline" x="-7" y="78" width="14" height="40" rx="2.5" fill="url(#metal)"/>
+    <path class="keyline" d="M-5.5 76 a5.5 3 0 0 1 11 0 v2 h-11 z" fill="url(#metal)"/>
     <rect x="-7" y="105" width="14" height="1.1" fill="#00000055"/>
     <rect class="redlight" x="-7" y="80" width="14" height="6" rx="1.2" fill="url(#red)"/>
     <rect class="redflash" x="-7" y="80" width="14" height="6" rx="1.2" fill="#ffffff"/>
