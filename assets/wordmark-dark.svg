@@ -46,16 +46,18 @@
   </style>
 
   <!-- wordmark; A + the device share one chrome gradient, bright on dark so no keyline is needed. -->
-  <text x="260" y="118" font-size="60" text-anchor="middle"><tspan class="base">Neur</tspan><tspan fill="url(#metal)">A</tspan><tspan class="base" dx="16">lyzer</tspan></text>
+  <text x="260" y="118" font-size="60" text-anchor="middle"><tspan class="base">Neur</tspan><tspan fill="url(#metal)">A</tspan><tspan class="base" dx="24">lyzer</tspan></text>
   <!-- trademark, placed absolutely so the wordmark's centered spacing is untouched -->
   <text x="415" y="84" font-size="19" font-weight="600" class="base" opacity="0.9">™</text>
 
   <!-- the "I" = a neuralyzer, sized/placed like a capital I (cap-top to baseline).
-       x=284 centres the 14-wide tube in the 19.5-wide slot the A (ends 274) and
-       "lyzer" (starts 293.5) leave. At 278 it overlapped the A's right leg by 3,
-       which the dark variant hid (same chrome, no contour) and any keyline in
-       the light variant exposed as the device welded onto the A. -->
-  <g transform="translate(284,0)">
+       The A and "lyzer" are pushed apart by dx=24 to make a 27.5-wide slot for the
+       14-wide tube: ~6.8 clear on each side. The wordmark's average letter gap is
+       only ~2.9, but this is a solid vertical bar next to another vertical stem
+       ("l"), and stem-to-stem pairs need materially more air or they read as one
+       shape. x=283.8 is the slot's midpoint, and stays put at any dx because the
+       centred text grows symmetrically about it. -->
+  <g transform="translate(283.8,0)">
     <ellipse class="redlight" cx="0" cy="83" rx="8" ry="6" fill="#ef4444" filter="url(#soft)"/>
     <rect x="-7" y="78" width="14" height="40" rx="2.5" fill="url(#metal)"/>
     <path d="M-5.5 76 a5.5 3 0 0 1 11 0 v2 h-11 z" fill="url(#metal)"/>
