@@ -6,6 +6,12 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-06
+
+First tagged alpha. `main` now matches the hardened `dev` line — earlier `main`
+was only the scaffold, so installing from `@main` fetched a build without the
+working wipe/snapshot/restore. Everything below shipped in this release.
+
 ### Changed — MCP tool responses
 - All four tools answer the same envelope. A missing or invalid config is now
   `{ok: false, reason, hint}` instead of an unhandled `ToolError` — an agent
