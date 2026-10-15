@@ -298,6 +298,50 @@ def test_restore_staging_failure_preserves_current_state(
     assert not list(store.root.glob(".restore-*"))
 
 
+def test_restore_does_not_skip_files_matching_through_a_directory_symlink(
+    state: dict[str, Path], tmp_path: Path
+) -> None:
+    if not state["has_symlinks"]:
+        pytest.skip("symlinks unavailable")
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "golden")
+    deep = state["sandbox"] / "deep"
+    outside = tmp_path / "outside-tree"
+    shutil.copytree(deep, outside)
+    original = (outside / "nested" / "artifact.bin").read_bytes()
+    shutil.rmtree(deep)
+    deep.symlink_to(outside, target_is_directory=True)
+
+    plan = store.restore(snap, KeepList())
+    assert not plan.errors
+    assert not deep.is_symlink()
+    assert (deep / "nested" / "artifact.bin").read_bytes() == original
+    assert (outside / "nested" / "artifact.bin").read_bytes() == original
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_restore_refuses_a_target_root_replaced_by_a_symlink(
+    state: dict[str, Path], tmp_path: Path, commit: bool
+) -> None:
+    if not state["has_symlinks"]:
+        pytest.skip("symlinks unavailable")
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "golden")
+    root = state["sandbox"]
+    saved = tmp_path / "moved-sandbox"
+    root.rename(saved)
+    outside = tmp_path / "outside-tree"
+    outside.mkdir()
+    (outside / "notes.txt").write_text("outside current state")
+    root.symlink_to(outside, target_is_directory=True)
+
+    plan = (store.restore if commit else store.plan_restore)(snap, KeepList())
+    assert any("target root is a symlink" in e for e in plan.errors)
+    assert not plan.restored and not plan.removed
+    assert (outside / "notes.txt").read_text() == "outside current state"
+    assert set(p.name for p in outside.iterdir()) == {"notes.txt"}
+
+
 def test_force_unlink_does_not_chmod_through_a_symlink(
     state: dict[str, Path], tmp_path: Path
 ) -> None:

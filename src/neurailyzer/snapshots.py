@@ -388,6 +388,12 @@ class SnapshotStore:
 
     def _restore(self, snap: Snapshot, keep: KeepList, *, commit: bool) -> RestorePlan:
         plan = RestorePlan(snapshot_id=snap.id)
+        for roots in snap.targets.values():
+            for root in roots:
+                if Path(root).is_symlink():
+                    plan.errors.append(f"target root is a symlink: {root}")
+        if plan.errors:
+            return plan
         with contextlib.ExitStack() as stack:
             staging: Path | None = None
             if commit:
@@ -426,7 +432,21 @@ class SnapshotStore:
                 plan.skipped_keep.append(str(dest))
                 continue
             try:
-                if dest.is_file() and not dest.is_symlink() and _hash_file(dest) == rec.sha256:
+                root = Path(target)
+                through_link = any(
+                    parent.is_symlink()
+                    for parent in reversed(dest.parents)
+                    if parent == root or root in parent.parents
+                )
+                # Cleanup removes directory symlinks inside the target.
+                # Matching bytes behind one will disappear with that link,
+                # so they still need a verified blob to be restored.
+                if (
+                    not through_link
+                    and dest.is_file()
+                    and not dest.is_symlink()
+                    and _hash_file(dest) == rec.sha256
+                ):
                     continue
             except OSError as exc:
                 plan.errors.append(f"could not inspect {dest}: {exc}")
