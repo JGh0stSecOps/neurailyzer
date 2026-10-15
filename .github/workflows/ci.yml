@@ -48,3 +48,25 @@ jobs:
       - run: pip install -e ".[dev,mcp]"
       - name: pytest (unit + e2e smoke)
         run: pytest
+
+  test-required:
+    # Preserve the required check names after expanding test to an OS matrix.
+    # Both gates cover the entire matrix, including Python 3.13; a failed,
+    # cancelled, or skipped dependency must never turn into a passing gate.
+    name: test (${{ matrix.python }})
+    needs: test
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - name: require the complete test matrix
+        env:
+          MATRIX_RESULT: ${{ needs.test.result }}
+        run: |
+          if [ "$MATRIX_RESULT" != "success" ]; then
+            echo "::error::Test matrix did not succeed (result: $MATRIX_RESULT)"
+            exit 1
+          fi
+          echo "All matrix jobs passed."
