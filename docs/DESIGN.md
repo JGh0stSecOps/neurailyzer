@@ -101,6 +101,9 @@ Every `Wiper` implements **`plan()`** (returns what *would* change — the dry-r
 
 - Before any `--commit` wipe, `snapshots.take()` writes a restore point: a content-addressed bundle of the affected state (DB rows, vector export, sandbox tarball, a manifest of remote IDs), tagged with a timestamp + label.
 - `restore --to <T>` finds the nearest snapshot at/before `T` and rehydrates it.
+- Before changing any target, restore checks the SHA-256 and size of every required file blob. Missing, unreadable, or mismatched blobs abort the whole operation; dry-runs report the same errors. Files protected by the keep-list or already matching their recorded hash do not require a blob.
+- A target root replaced by a symlink is refused. Files reached through a directory symlink inside a target require snapshot bytes even if their content matches: cleanup removes that link before rebuilding the original directory.
+- Commit restores stream those bytes into a private temporary directory in the snapshot store, then restore from the verified copies. This needs temporary disk space proportional to the files being restored and prevents a changed store blob from being read after target cleanup. Staging is removed on return, including refusal. Target filesystem operations are not transactional; later write failures may still require the pre-restore snapshot.
 - Snapshots live outside the wipe targets (their own store) and are themselves subject to a retention policy (so *they* don't become the storage creep).
 
 ## 8. Keep-list

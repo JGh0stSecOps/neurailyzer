@@ -451,10 +451,10 @@ def restore(
     else:
         plan = store.plan_restore(snap, cfg.keep)
     _print_restore(plan)
+    if plan.errors:
+        raise typer.Exit(code=1)
     if not commit:
         console.print("[dim]nothing changed. re-run with --commit to act.[/dim]")
-    elif plan.errors:
-        raise typer.Exit(code=1)
     else:
         console.print("[green]restored.[/green]")
 
@@ -468,7 +468,7 @@ def _print_restore(plan: RestorePlan) -> None:
         console.print(f"  [cyan]keep[/cyan]    {escape(p)}")
     for e in plan.errors:
         err_console.print(f"  [red]error[/red]   {escape(e)}")
-    if plan.change_count == 0:
+    if plan.change_count == 0 and not plan.errors:
         console.print("  [dim]state already matches this snapshot[/dim]")
 
 

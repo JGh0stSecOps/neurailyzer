@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from neurailyzer.cli import app
+from neurailyzer.snapshots import Snapshot, SnapshotStore
 
 runner = CliRunner()
 
@@ -82,6 +84,24 @@ def test_restore_with_no_snapshot_fails_clearly(state: dict[str, Path]) -> None:
         app, ["--config", str(state["config"]), "restore", "--to", "2020-01-01T00:00"]
     )
     assert result.exit_code == 1
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_damaged_restore_is_a_cli_failure_without_target_changes(
+    state: dict[str, Path], damaged_restore: tuple[SnapshotStore, Snapshot, str], commit: bool
+) -> None:
+    _, snap, error = damaged_restore
+    args = ["--config", str(state["config"]), "restore", "--to", snap.id]
+    if commit:
+        args.append("--commit")
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1
+    assert error in result.output
+    assert "state already matches" not in result.output
+    assert "re-run with --commit" not in result.output
+    assert (state["sandbox"] / "notes.txt").read_text() == "new notes"
+    assert (state["sandbox"] / "deep" / "nested" / "artifact.bin").read_bytes() == b"new artifact"
+    assert (state["sandbox"] / "new-dir" / "new.txt").read_text() == "new file"
 
 
 def test_bad_config_is_exit_2(tmp_path: Path) -> None:

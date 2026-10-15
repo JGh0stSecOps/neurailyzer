@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("mcp", reason="mcp extra not installed")
 
 from neurailyzer.mcp_server import build_server  # noqa: E402
+from neurailyzer.snapshots import Snapshot, SnapshotStore  # noqa: E402
 
 
 def _call(server: Any, tool: str, args: dict[str, Any]) -> Any:
@@ -67,6 +68,20 @@ def test_nl_snapshot_then_nl_restore_round_trip(state: dict[str, Path]) -> None:
     out = _call(server, "nl_restore", {"to": took["id"], "commit": True})
     assert out["ok"] is True
     assert (state["sandbox"] / "notes.txt").read_text() == "scratch note"
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_damaged_restore_is_an_mcp_refusal_without_target_changes(
+    state: dict[str, Path], damaged_restore: tuple[SnapshotStore, Snapshot, str], commit: bool
+) -> None:
+    _, snap, error = damaged_restore
+    out = _call(build_server(str(state["config"])), "nl_restore", {"to": snap.id, "commit": commit})
+    assert out["ok"] is False
+    assert any(error in e for e in out["errors"])
+    assert not out["restored"] and not out["removed"]
+    assert (state["sandbox"] / "notes.txt").read_text() == "new notes"
+    assert (state["sandbox"] / "deep" / "nested" / "artifact.bin").read_bytes() == b"new artifact"
+    assert (state["sandbox"] / "new-dir" / "new.txt").read_text() == "new file"
 
 
 def test_nl_wipe_refuses_to_commit_remote_over_mcp(state: dict[str, Path]) -> None:
