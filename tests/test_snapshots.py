@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import stat
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 
 from neurailyzer import snapshots as snapshots_mod
 from neurailyzer.config import KeepList, load
-from neurailyzer.snapshots import SnapshotError, SnapshotStore, parse_point_in_time
+from neurailyzer.snapshots import Snapshot, SnapshotError, SnapshotStore, parse_point_in_time
 
 
 def _store_and_targets(state: dict[str, Path]) -> tuple[SnapshotStore, dict[str, tuple[Path, ...]]]:
@@ -205,6 +206,96 @@ def test_dry_run_restore_reports_a_missing_blob(state: dict[str, Path]) -> None:
     assert plan.errors, "dry-run stayed silent about unrestorable files"
     assert any("missing blob" in e for e in plan.errors)
     assert not plan.restored, "planned a restore it cannot perform"
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_damaged_restore_preserves_all_current_state(
+    state: dict[str, Path], damaged_restore: tuple[SnapshotStore, Snapshot, str], commit: bool
+) -> None:
+    store, snap, error = damaged_restore
+    restore = store.restore if commit else store.plan_restore
+    plan = restore(snap, KeepList())
+    assert any(error in e for e in plan.errors)
+    assert not plan.restored and not plan.removed
+    assert (state["sandbox"] / "notes.txt").read_text() == "new notes"
+    assert (state["sandbox"] / "deep" / "nested" / "artifact.bin").read_bytes() == b"new artifact"
+    assert (state["sandbox"] / "new-dir" / "new.txt").read_text() == "new file"
+    assert (state["sandbox"] / "new-empty-dir").is_dir()
+    assert not list(store.root.glob(".restore-*"))
+
+
+@pytest.mark.parametrize("kept", [False, True])
+def test_restore_needs_no_blob_for_kept_or_unchanged_files(
+    state: dict[str, Path], kept: bool
+) -> None:
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "golden")
+    rec = next(f for f in snap.files if f.relpath == "notes.txt")
+    (store.blob_dir / rec.sha256[:2] / rec.sha256).unlink()
+    note = state["sandbox"] / "notes.txt"
+    if kept:
+        note.write_text("kept newer content")
+    keep = KeepList(paths=(note,)) if kept else KeepList()
+    extra = state["sandbox"] / "new.txt"
+    extra.write_text("remove me")
+
+    plan = store.restore(snap, keep)
+    assert not plan.errors
+    assert note.read_text() == ("kept newer content" if kept else "scratch note")
+    assert not extra.exists()
+
+
+def test_restore_uses_verified_bytes_if_store_changes_during_cleanup(
+    state: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "golden")
+    rec = next(f for f in snap.files if f.relpath == "notes.txt")
+    blob = store.blob_dir / rec.sha256[:2] / rec.sha256
+    note = state["sandbox"] / "notes.txt"
+    note.write_text("new notes")
+    extra = state["sandbox"] / "new.txt"
+    extra.write_text("remove me")
+    unlink = snapshots_mod._force_unlink
+
+    def remove_and_damage_blob(path: Path) -> None:
+        unlink(path)
+        if path == extra:
+            blob.write_bytes(b"corruption after validation")
+
+    monkeypatch.setattr(snapshots_mod, "_force_unlink", remove_and_damage_blob)
+    plan = store.restore(snap, KeepList())
+    assert not plan.errors
+    assert not extra.exists()
+    assert note.read_text() == "scratch note"
+    assert not list(store.root.glob(".restore-*"))
+
+
+def test_restore_staging_failure_preserves_current_state(
+    state: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, targets = _store_and_targets(state)
+    snap = store.take(targets, "golden")
+    note = state["sandbox"] / "notes.txt"
+    note.write_text("new notes")
+    extra = state["sandbox"] / "new.txt"
+    extra.write_text("new file")
+    original_open = Path.open
+
+    def full_staging_disk(path: Path, mode: str = "r", *args: object, **kwargs: object) -> object:
+        if path.parent.name.startswith(".restore-") and mode == "wb":
+            if os.name != "nt":
+                assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+            raise OSError("No space left on device")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", full_staging_disk)
+    plan = store.restore(snap, KeepList())
+    assert any("No space left on device" in e for e in plan.errors)
+    assert not plan.restored and not plan.removed
+    assert note.read_text() == "new notes"
+    assert extra.read_text() == "new file"
+    assert not list(store.root.glob(".restore-*"))
 
 
 def test_force_unlink_does_not_chmod_through_a_symlink(

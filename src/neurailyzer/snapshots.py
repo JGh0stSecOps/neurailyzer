@@ -24,7 +24,9 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import stat
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -386,6 +388,87 @@ class SnapshotStore:
 
     def _restore(self, snap: Snapshot, keep: KeepList, *, commit: bool) -> RestorePlan:
         plan = RestorePlan(snapshot_id=snap.id)
+        with contextlib.ExitStack() as stack:
+            staging: Path | None = None
+            if commit:
+                try:
+                    staging = Path(
+                        stack.enter_context(
+                            tempfile.TemporaryDirectory(prefix=".restore-", dir=self.root)
+                        )
+                    )
+                except OSError as exc:
+                    plan.errors.append(f"could not stage restore data: {exc}")
+                    return plan
+            files = self._prepare_restore_files(snap, keep, plan, staging)
+            if plan.errors:
+                # No target writes, unlinks, rmdirs or chmods before every
+                # required blob has passed validation. A partial rollback
+                # would destroy newer state without restoring the old state.
+                return plan
+            return self._apply_restore(snap, keep, plan, files, commit=commit)
+
+    def _prepare_restore_files(
+        self, snap: Snapshot, keep: KeepList, plan: RestorePlan, staging: Path | None
+    ) -> builtins.list[tuple[Path, FileRecord, Path]]:
+        """Validate needed bytes; commits retain private copies until applied.
+
+        Stream rather than loading an entire snapshot into memory. Staging
+        also avoids re-reading mutable store blobs after target cleanup.
+        Kept and already-matching files need no blob to be restored.
+        """
+        files: list[tuple[Path, FileRecord, Path]] = []
+        dir_roots = set(snap.dir_roots)
+        wanted_files = {(f.target, f.relpath): f for f in snap.files}
+        for (target, relpath), rec in sorted(wanted_files.items()):
+            dest = _dest(target, relpath, dir_roots)
+            if keep.protects(dest):
+                plan.skipped_keep.append(str(dest))
+                continue
+            try:
+                if dest.is_file() and not dest.is_symlink() and _hash_file(dest) == rec.sha256:
+                    continue
+            except OSError as exc:
+                plan.errors.append(f"could not inspect {dest}: {exc}")
+                continue
+
+            blob = self.blob_dir / rec.sha256[:2] / rec.sha256
+            prepared = staging / rec.sha256 if staging is not None else blob
+            digest = hashlib.sha256()
+            size = 0
+            try:
+                with (
+                    blob.open("rb") as source,
+                    prepared.open("wb")
+                    if staging is not None
+                    else contextlib.nullcontext() as sink,
+                ):
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                        size += len(chunk)
+                        if sink is not None:
+                            sink.write(chunk)
+            except FileNotFoundError:
+                plan.errors.append(f"missing blob for {dest} ({rec.sha256[:12]}...)")
+                continue
+            except OSError as exc:
+                plan.errors.append(f"could not read blob or stage restore data for {dest}: {exc}")
+                continue
+            if digest.hexdigest() != rec.sha256 or size != rec.size:
+                plan.errors.append(f"corrupt blob for {dest} ({rec.sha256[:12]}...)")
+                continue
+            files.append((dest, rec, prepared))
+        return files
+
+    def _apply_restore(
+        self,
+        snap: Snapshot,
+        keep: KeepList,
+        plan: RestorePlan,
+        files_to_restore: builtins.list[tuple[Path, FileRecord, Path]],
+        *,
+        commit: bool,
+    ) -> RestorePlan:
         roots = [Path(r) for rs in snap.targets.values() for r in rs]
 
         wanted_files = {(f.target, f.relpath): f for f in snap.files}
@@ -419,32 +502,14 @@ class SnapshotStore:
 
         # 2. put back what the snapshot recorded
         dir_roots = set(snap.dir_roots)
-        for (target, relpath), rec in sorted(wanted_files.items()):
-            dest = _dest(target, relpath, dir_roots)
-            if keep.protects(dest):
-                # "never touched" has to mean the WRITE half too: rolling a
-                # rotated credential back to its old value is exactly the
-                # kind of silent damage the keep-list exists to prevent.
-                plan.skipped_keep.append(str(dest))
-                continue
-            blob = self.blob_dir / rec.sha256[:2] / rec.sha256
-            differs = not (
-                dest.is_file() and not dest.is_symlink() and _hash_file(dest) == rec.sha256
-            )
-            if not differs:
-                continue
-            if not blob.exists():
-                # report this while PLANNING too -- a dry-run that lists a
-                # file it cannot actually restore is worse than useless
-                plan.errors.append(f"missing blob for {dest} ({rec.sha256[:12]}...)")
-                continue
+        for dest, rec, prepared in files_to_restore:
             plan.restored.append(str(dest))
             if not commit:
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.exists() or dest.is_symlink():
                 _force_unlink(dest)
-            dest.write_bytes(blob.read_bytes())
+            shutil.copyfile(prepared, dest)
             os.chmod(dest, stat.S_IMODE(rec.mode))
             os.utime(dest, (rec.mtime, rec.mtime))
         for (target, relpath), drec in sorted(wanted_dirs.items()):

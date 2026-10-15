@@ -8,6 +8,9 @@ from typing import Any
 
 import pytest
 
+from neurailyzer.config import load
+from neurailyzer.snapshots import Snapshot, SnapshotStore
+
 
 @pytest.fixture
 def state(tmp_path: Path) -> dict[str, Any]:
@@ -75,3 +78,37 @@ retention = 5
         "snapdir": snapdir,
         "has_symlinks": has_symlinks,
     }
+
+
+@pytest.fixture(params=["missing", "corrupt", "unreadable"])
+def damaged_restore(
+    state: dict[str, Any], request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> tuple[SnapshotStore, Snapshot, str]:
+    """A damaged restore point alongside newer state that must survive refusal."""
+    cfg = load(state["config"])
+    store = SnapshotStore(cfg.snapshot_dir)
+    snap = store.take({s: cfg.roots_for(s) for s in ("session", "sandbox")}, "golden")
+    record = next(f for f in snap.files if f.relpath == "notes.txt")
+    blob = store.blob_dir / record.sha256[:2] / record.sha256
+    (state["sandbox"] / "notes.txt").write_text("new notes")
+    (state["sandbox"] / "deep" / "nested" / "artifact.bin").write_bytes(b"new artifact")
+    (state["sandbox"] / "new-dir").mkdir()
+    (state["sandbox"] / "new-dir" / "new.txt").write_text("new file")
+    (state["sandbox"] / "new-empty-dir").mkdir()
+    if request.param == "missing":
+        blob.unlink()
+        error = "missing blob"
+    elif request.param == "corrupt":
+        blob.write_bytes(b"damaged snapshot content")
+        error = "corrupt blob"
+    else:
+        original_open = Path.open
+
+        def deny_blob(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if path == blob:
+                raise PermissionError("snapshot blob is unreadable")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", deny_blob)
+        error = "could not read blob"
+    return store, snap, error

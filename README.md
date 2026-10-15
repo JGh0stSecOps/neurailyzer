@@ -108,6 +108,7 @@ Wiping is destructive, so the defaults are conservative — and tested end-to-en
 
 - **Dry-run by default.** `wipe` and `restore` print a plan; `--commit` is required to act.
 - **Snapshot before every commit** — wipes *and* restores — so any reset is reversible (`--no-snapshot` exists but shouts).
+- **Validate before restoring.** Missing, unreadable, or corrupted snapshot content needed for a rollback makes both dry-run and commit fail before target files change. Commit restores stage verified bytes privately in the snapshot store; allow temporary disk space for the files being restored. Kept and already-matching files need no blob. This is not a transaction: a later target write failure can still leave a partial restore.
 - **Keep-list** entries are never touched, and every skip is reported.
 - **Symlinks are never followed.** A sandbox link aimed at your home directory removes the link, not your home.
 - **Config sanity guards** refuse targets like `/`, your home directory, anything containing the snapshot store, or anything that *resolves into* Downloads/Documents/Desktop and friends — a harness path linked there is an accident, not a wipe request. Symlinked targets are reported in the plan so a redirected wipe is never a surprise.
