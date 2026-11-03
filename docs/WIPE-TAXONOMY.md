@@ -60,7 +60,7 @@ The concrete map of agent/model state, where it lives, how an adapter resets it,
 
 ## NOT wipeable (be honest about it)
 
-- **Base-model weights / "training bias."** Frozen. Not state. The only lever is *swapping* the model, not wiping it. NeurAIlyzer will never claim otherwise.
+- **Model weights / learned behavior.** These are outside NeurAIlyzer's state scopes. [LacunAI](https://github.com/JGh0stSecOps/lacunai) handles experimental local checkpoint editing and recovery evaluation. Reduced recoverability under finite tests is not proof of information deletion. NeurAIlyzer has no `trace` or `weights` scope and no LacunAI dependency.
 - **Provider-side logs you don't own.** If a vendor retains request logs, that's their retention policy, not our state. Document it; don't pretend to delete it.
 
 ---

@@ -6,6 +6,13 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed — state and model-side separation
+
+- NeurAIlyzer remains a state-hygiene tool: wipe accumulated state, protect a keep-list, and restore snapshots. Package metadata no longer describes it as a distiller or memory store.
+- Model-side experimentation belongs to [LacunAI](https://github.com/JGh0stSecOps/lacunai). The experimental additions were moved before they were committed here; their committed history starts in LacunAI.
+- `neurailyzer experimental ...` is a one-release deprecation shim, scheduled for removal in **0.2.0**. It emits a structured migration notice and exits with code `2`; it neither imports LacunAI nor forwards or executes supplied arguments. No `trace` or `weights` scope is introduced.
+- Package authorship identifies Pixelated.
+
 ## [0.1.0] - 2026-08-06
 
 First tagged alpha. `main` now matches the hardened `dev` line — earlier `main`

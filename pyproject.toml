@@ -1,11 +1,11 @@
 [project]
 name = "neurailyzer"
 version = "0.1.0"
-description = "State hygiene for AI agents — distill what matters, wipe the drift, restore to a point in time."
+description = "State hygiene for AI agents — wipe accumulated state, protect keep-lists, restore to a point in time."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Zoetic Solutions" }]
+authors = [{ name = "Pixelated" }]
 keywords = ["ai", "agents", "memory", "context", "mcp", "hygiene", "wipe"]
 classifiers = [
   "Development Status :: 3 - Alpha",
