@@ -18,13 +18,21 @@
 
 ## The idea
 
-Long-running agent systems don't drift because their **weights** change — the weights are frozen. They drift because of the **state that accumulates around them**: KV cache, conversation history, injected RAG memory, instruction cruft, tool-sandbox leftovers, and stored threads/files on remote providers. That accumulated state is what biases outputs and creeps storage.
+NeurAIlyzer handles the **state that accumulates around a model**: KV cache, conversation history, injected RAG memory, instruction cruft, tool-sandbox leftovers, and stored threads/files on remote providers. That accumulated state conditions outputs and consumes storage. Model weights are outside this tool's scope.
 
 **NeurAIlyzer is the flash that resets it.** It:
 
 1. **Wipes** the accumulated state — locally *and* on remote providers, wherever an API/CLI allows it.
 2. **Protects** a keep-list — the paths, collections, and memories you mark are never touched.
 3. **Snapshots + restores** — every wipe takes a restore point first, so you can roll state back to a **point in time you provide**.
+
+NeurAIlyzer is **not a memory store or a distiller**. Your application owns durable memory; the keep-list protects what you choose to retain. NeurAIlyzer does not summarize, condense, or rewrite that content.
+
+## Model-side companion: LacunAI
+
+[LacunAI](https://github.com/JGh0stSecOps/lacunai) is the separate tool for mapping, editing, evaluating and restoring local open-weight checkpoints. Its verification measures **reduced recoverability under specified tests**, not proof that information is absent. NeurAIlyzer remains usable without LacunAI installed and does not import or depend on it. LacunAI may optionally call NeurAIlyzer through its `state` extra; the dependency points in that direction only.
+
+The experimental weight-editing additions were moved before they were committed to NeurAIlyzer. Their committed history begins in LacunAI; no weight-editing implementation remains here. For one release, `neurailyzer experimental ...` emits a structured deprecation notice and exits with code `2`. It never forwards arguments, loads a model, or changes state. Use `lacunai --help` to choose the model-side command. The shim is scheduled for removal in **0.2.0**.
 
 ## Works with your models — not one stack
 
@@ -49,7 +57,7 @@ Adapters are pluggable — implement the small `Wiper` contract for a store we d
 | RAG / vector memory | `rag` | 🔜 adapter planned |
 | Local runtime state (KV cache, resident models) | `models` | 🔜 adapter planned |
 | Remote provider state (files, vector stores, batches) | `remote` | ✅ **shipped** — per-provider, per-surface opt-in |
-| Base-model "bias" (the frozen weights) | — | ❌ not state — swap the model, you can't wipe it |
+| Model weights and learned behavior | — | Outside NeurAIlyzer; see [LacunAI](https://github.com/JGh0stSecOps/lacunai) for experimental model-side editing |
 
 The honest line: you can't wipe a hosted model's training. You *can* wipe every bit of **state you created** around it — and that's what actually drifts.
 
