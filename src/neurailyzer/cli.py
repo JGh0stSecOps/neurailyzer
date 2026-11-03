@@ -28,6 +28,7 @@ from .config import (
     load,
 )
 from .config import Config as Config  # noqa: PLC0414 — re-exported for library use
+from .experimental.cli import moved_to_lacunai
 from .snapshots import RestorePlan, SnapshotError, SnapshotStore
 from .wipers.base import WipePlan
 
@@ -43,6 +44,12 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+app.command(
+    "experimental",
+    help="Deprecated: weight editing moved to LacunAI; this command refuses execution.",
+    add_help_option=False,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)(moved_to_lacunai)
 console = Console()
 err_console = Console(stderr=True)
 

@@ -12,7 +12,7 @@ Agent systems that run for a long time (or run many tasks back-to-back) accumula
 - **Scratch state** — tool-sandbox files, temp artifacts, downloads.
 - **Remote state** — provider-side threads, uploaded files, assistants, fine-tunes, "memory" features.
 
-None of this is the model's *weights* (those are frozen). But all of it conditions the model's next output, so it behaves like drift/bias — and it never gets cleaned up.
+None of this is the model's *weights*. It conditions the model's next output and can persist until explicitly cleaned up. Model-side editing belongs to [LacunAI](https://github.com/JGh0stSecOps/lacunai), a separate project.
 
 ## 2. Principle
 
@@ -61,6 +61,8 @@ Wipes are addressed by scope, least-blast-radius first:
 
 Scopes compose: `neurailyzer wipe session sandbox`.
 
+There is no `trace` or `weights` scope. The `models` scope concerns resident runtime state and KV caches, not checkpoint editing.
+
 **Presets** (`docs/../src/neurailyzer/presets.py`) map a known harness to the
 scopes above plus its keep-list, so `neurailyzer detect --enable` configures a
 machine without anyone hand-listing paths. A preset ships only when every path
@@ -79,6 +81,8 @@ Three surfaces over one core, so it serves a human, an agent, and an orchestrato
 - **CLI** (`neurailyzer …`) — scriptable, cron-able, the reference surface.
 - **MCP server** (`neurailyzer mcp serve`) — the same verbs as MCP tools (`nl_list_state`, `nl_snapshot`, `nl_wipe`, `nl_restore`) so any MCP-capable agent can invoke hygiene mid-workflow.
 - **Library** — import the core and call it from your own code.
+
+NeurAIlyzer has no dependency on LacunAI. LacunAI's optional `state` extra may call a guarded NeurAIlyzer surface; it does not add model-side operations to this core. For one release, `neurailyzer experimental ...` is a refusal-only migration shim: it returns a structured deprecation notice with exit code `2`, does not import LacunAI, and does not forward arguments or execute any operation. Remove it in **0.2.0**.
 
 ## 6. Core modules
 
@@ -129,7 +133,7 @@ A configurable allow-list of paths / collections / memory keys that are **never*
 
 - **Not a compressor / summarizer.** If you want to shrink context *before* it reaches a model, that's a separate concern with its own dedicated tools — pair NeurAIlyzer with one if you like. NeurAIlyzer wipes state and protects a keep-list; it does not rewrite or condense what it keeps.
 - **Not a memory store.** Long-term memory lives in your app and is protected by the keep-list; we wipe and snapshot around it.
-- **Not a way to "de-bias" a base model's weights** — that's not state.
+- **Not a model-weight editor.** [LacunAI](https://github.com/JGh0stSecOps/lacunai) owns model-side experiments. Its finite recovery tests cannot prove information absence; this tool makes no model-erasure claim.
 
 ## 12. Open decisions
 
