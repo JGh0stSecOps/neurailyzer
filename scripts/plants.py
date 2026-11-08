@@ -106,11 +106,11 @@ PLANTS: tuple[Plant, ...] = (
     Plant(
         "mcp-restore-refuses-without-memory-record",
         "src/neurailyzer/mcp_server.py",
-        "tests/test_memory_scope.py::test_mcp_restore_refuses_a_snapshot_with_no_memory_record_on_a_bare_config",
+        "tests/test_memory_scope.py::test_mcp_restore_refuses_a_snapshot_with_no_memory_record",
         (
             (
-                "if recorded is None and not (cfg.memory_keep.paths or cfg.memory_keep.patterns):",
-                "if False:",
+                "        if recorded is None:\n            return {\n",
+                "        if False:\n            return {\n",
             ),
         ),
     ),

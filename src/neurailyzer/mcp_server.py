@@ -260,16 +260,17 @@ def build_server(config_path: str | None = None) -> Any:
             return {"ok": False, "reason": f"no snapshot at or before {to!r}"}
         # Memory never changes over MCP, in either direction: nl_wipe refuses
         # to forget it, nl_restore refuses to roll it back. The protection is
-        # the memory keep RECORDED with the snapshot plus today's; a snapshot
-        # that recorded none, on a config that names none, cannot establish
-        # it -- so it is refused rather than guessed.
+        # the memory keep RECORDED with the snapshot plus today's. A snapshot
+        # that recorded none (pre-0.2) cannot establish which of ITS paths
+        # were memory -- today's config may name a different harness's -- so
+        # it is refused rather than guessed, whatever is configured now.
         recorded = KeepList.from_record(snap.memory_keep)
-        if recorded is None and not (cfg.memory_keep.paths or cfg.memory_keep.patterns):
+        if recorded is None:
             return {
                 "ok": False,
-                "reason": "this snapshot carries no record of which paths are agent "
-                "memory and the current config names none, so a restore over MCP "
-                "cannot keep memory protected. Restore it at the CLI.",
+                "reason": "this snapshot carries no record of which of its paths are "
+                "agent memory (taken before 0.2), so a restore over MCP cannot keep "
+                "memory protected. Restore it at the CLI.",
             }
         keep = cfg.keep.merged(recorded)
         if commit:

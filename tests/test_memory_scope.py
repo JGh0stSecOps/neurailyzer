@@ -410,12 +410,13 @@ def test_restore_keeps_memory_protected_after_the_preset_is_disabled(
     assert (proj / "sess-1.jsonl").exists()  # the transcript did come back
 
 
-def test_mcp_restore_refuses_a_snapshot_with_no_memory_record_on_a_bare_config(
+def test_mcp_restore_refuses_a_snapshot_with_no_memory_record(
     home: dict[str, Any], monkeypatch: Any, tmp_path: Path
 ) -> None:
-    """A pre-0.2 manifest records no memory paths. With a config that names
-    none either, MCP cannot establish memory protection -- so it refuses
-    instead of guessing. The CLI (a human) may still restore it."""
+    """A pre-0.2 manifest records no memory paths, so MCP cannot know which
+    of ITS paths were memory -- even when today's config names another
+    harness's memory (codex here). It refuses instead of guessing; the CLI
+    (a human) may still restore it."""
     pytest.importorskip("mcp", reason="mcp extra not installed")
     import json
 
@@ -430,11 +431,16 @@ def test_mcp_restore_refuses_a_snapshot_with_no_memory_record_on_a_bare_config(
     data = json.loads(manifest.read_text())
     data.pop("memory_keep")  # a pre-0.2 manifest: no record at all
     manifest.write_text(json.dumps(data))
-    bare = tmp_path / "bare.toml"
-    bare.write_text(f'[snapshots]\ndir = "{snapdir.as_posix()}"\n')
-
-    out = _mcp_call(
-        build_server(str(bare)), "nl_restore", {"to": snap.id, "commit": True, "force": True}
-    )
-    assert out["ok"] is False
-    assert "memory" in out["reason"] and "CLI" in out["reason"]
+    fact = home["proj"] / "memory" / "fact.md"
+    fact.write_text("changed after the old snapshot\n")
+    for enabled in ("[]", '["codex"]'):  # bare, and an UNRELATED memory preset still on
+        cfg = tmp_path / "cfg.toml"
+        cfg.write_text(
+            f'[presets]\nenabled = {enabled}\n\n[snapshots]\ndir = "{snapdir.as_posix()}"\n'
+        )
+        out = _mcp_call(
+            build_server(str(cfg)), "nl_restore", {"to": snap.id, "commit": True, "force": True}
+        )
+        assert out["ok"] is False, enabled
+        assert "memory" in out["reason"] and "CLI" in out["reason"]
+        assert fact.read_text() == "changed after the old snapshot\n"
