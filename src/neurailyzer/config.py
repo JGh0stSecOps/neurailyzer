@@ -552,7 +552,13 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         paths = _parse_paths(f"targets.{scope}", raw_paths)
         if isinstance(raw_paths, list):
             for written, resolved in zip(raw_paths, paths, strict=False):
-                as_written = Path(os.path.expandvars(str(written))).expanduser()
+                # lexical absolute form: no symlink resolution, but `..` folded
+                # and a relative path anchored, so `.parents` below is real.
+                # A relative spelling must not slip past an ancestor check that
+                # compares against an absolute resolved path.
+                as_written = Path(
+                    os.path.abspath(Path(os.path.expandvars(str(written))).expanduser())
+                )
                 if as_written != resolved:
                     # `.../projects/p/memory -> .../.claude`: the wipe root
                     # would become the parent tree, credentials included. A

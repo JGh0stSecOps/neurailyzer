@@ -108,7 +108,9 @@ def test_env_var_discovery(state: dict[str, Path], monkeypatch: pytest.MonkeyPat
     assert cfg.roots_for("sandbox") == (state["sandbox"],)
 
 
-def test_explicit_target_linking_to_its_own_ancestor_is_refused(tmp_path: Path) -> None:
+def test_explicit_target_linking_to_its_own_ancestor_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`[targets.X] paths = [".../projects/p/memory"]` where that path is a
     symlink to `.../.claude` would make the wipe root the whole harness dir,
     credentials included. A link to an ancestor is never a dotfiles layout;
@@ -120,12 +122,19 @@ def test_explicit_target_linking_to_its_own_ancestor_is_refused(tmp_path: Path) 
     (harness / ".credentials.json").write_text("secret")
     link = harness / "projects" / "p" / "memory"
     link.symlink_to(harness, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    spellings = (
+        link.as_posix(),  # absolute
+        ".claude/projects/p/memory",  # relative to cwd
+        ".claude/projects/p/../p/memory",  # with a `..` segment
+    )
     for scope in ("memory", "session"):
-        cfg = tmp_path / f"{scope}.toml"
-        cfg.write_text(
-            f'[targets.{scope}]\npaths = ["{link.as_posix()}"]\n\n'
-            f'[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
-        )
-        with pytest.raises(ConfigError, match="ancestor"):
-            load(cfg)
+        for spelled in spellings:
+            cfg = tmp_path / f"{scope}.toml"
+            cfg.write_text(
+                f'[targets.{scope}]\npaths = ["{spelled}"]\n\n'
+                f'[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+            )
+            with pytest.raises(ConfigError, match="ancestor"):
+                load(cfg)
     assert (harness / ".credentials.json").exists()
