@@ -158,6 +158,17 @@ PLANTS: tuple[Plant, ...] = (
         (("    if window is not None and Scope.remote in scope:", "    if False:"),),
     ),
     Plant(
+        "list-state-default-excludes-remote-under-window",
+        "src/neurailyzer/cli.py",
+        "tests/test_time_window.py::test_cli_span_form_and_refusals",
+        (
+            (
+                "if s is not Scope.all and not (window is not None and s is Scope.remote)",
+                "if s is not Scope.all",
+            ),
+        ),
+    ),
+    Plant(
         "mcp-empty-bound",
         "src/neurailyzer/mcp_server.py",
         "tests/test_time_window.py::test_mcp_empty_bound_is_refused_not_unwindowed",
@@ -194,6 +205,18 @@ PLANTS: tuple[Plant, ...] = (
         (("        elif not st.complete:", "        elif False:"),),
     ),
     Plant(
+        "mcp-incomplete-status",
+        "src/neurailyzer/mcp_server.py",
+        "tests/test_time_window.py::test_mcp_list_state_reports_an_incomplete_survey",
+        (
+            (
+                '                        else "incomplete"\n'
+                "                        if not st.complete\n",
+                "",
+            ),
+        ),
+    ),
+    Plant(
         "mcp-incomplete-field",
         "src/neurailyzer/mcp_server.py",
         "tests/test_time_window.py::test_mcp_list_state_reports_an_incomplete_survey",
@@ -228,38 +251,63 @@ def _copy_tree(dest: Path) -> None:
         shutil.copy2(ROOT / f, dest / f)
 
 
+#: pytest exit codes that mean "tests ran and some FAILED" -- the only red
+#: that proves a guard. 2 (interrupted / collection error), 3 (internal
+#: error), 4 (usage error) and 5 (no tests collected) prove nothing.
+_TESTS_FAILED = 1
+
+
+def _pytest(copy: Path, test: str) -> tuple[int, str]:
+    proc = subprocess.run(  # noqa: S603 -- fixed argv, our own test suite
+        [sys.executable, "-m", "pytest", "-q", "-o", "addopts=", "-p", "no:cacheprovider", test],
+        cwd=copy,
+        env={"PYTHONPATH": str(copy / "src"), **_passthrough_env()},
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    last = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.strip()), "")
+    if not last and proc.stderr.strip():
+        last = proc.stderr.strip().splitlines()[-1]
+    return proc.returncode, last
+
+
 def run_plant(plant: Plant) -> tuple[bool, str]:
-    """(proven, detail): proven means the test went RED with the guard gone."""
+    """(proven, detail): proven means the named test PASSED on the untouched
+    copy and FAILED (exit 1, "failed" in the summary) once the guard was gone.
+
+    A missing interpreter, an import error or a collection error is not a
+    red: it is "no reading", and it never counts as proof.
+    """
     with tempfile.TemporaryDirectory(prefix="plant-") as tmp:
         copy = Path(tmp)
         _copy_tree(copy)
+        base_rc, base_last = _pytest(copy, plant.test)
+        ok, why = baseline_verdict(base_rc, base_last)
+        if not ok:
+            return False, why
         target = copy / plant.file
         try:
             target.write_text(apply(target.read_text(), plant.edits))
         except LookupError as exc:
             return False, f"anchor mismatch: {exc}"
-        proc = subprocess.run(  # noqa: S603 -- fixed argv, our own test suite
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-q",
-                "-o",
-                "addopts=",
-                "-p",
-                "no:cacheprovider",
-                plant.test,
-            ],
-            cwd=copy,
-            env={"PYTHONPATH": str(copy / "src"), "PATH": "", **_passthrough_env()},
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        last = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.strip()), "")
-        if proc.returncode == 0:
-            return False, f"GREEN with the guard removed -- not proven ({last})"
-        return True, last
+        return mutant_verdict(*_pytest(copy, plant.test))
+
+
+def baseline_verdict(rc: int, last: str) -> tuple[bool, str]:
+    """The untouched copy must PASS the named test, or nothing is measured."""
+    if rc != 0 or "passed" not in last:
+        return False, f"no baseline: the test does not pass untouched (exit {rc}: {last})"
+    return True, last
+
+
+def mutant_verdict(rc: int, last: str) -> tuple[bool, str]:
+    """Only exit 1 with a 'failed' summary is a red that proves the guard."""
+    if rc == 0:
+        return False, f"GREEN with the guard removed -- not proven ({last})"
+    if rc != _TESTS_FAILED or "failed" not in last:
+        return False, f"no reading: pytest exit {rc}, not a test failure ({last})"
+    return True, last
 
 
 def _passthrough_env() -> dict[str, str]:

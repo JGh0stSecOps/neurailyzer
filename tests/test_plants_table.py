@@ -40,3 +40,15 @@ def test_apply_refuses_a_missing_or_ambiguous_anchor() -> None:
     with pytest.raises(LookupError):
         plants.apply("a a", (("a", "y"),))
     assert plants.apply("a b", (("a", "y"),)) == "y b"
+
+
+def test_verdicts_count_only_a_real_test_failure_as_red() -> None:
+    """A broken environment must never read as 19 proven guards."""
+    assert plants.baseline_verdict(0, "1 passed in 0.1s")[0] is True
+    assert plants.baseline_verdict(1, "1 failed in 0.1s")[0] is False
+    assert plants.baseline_verdict(2, "ERROR: file not found")[0] is False
+    assert plants.mutant_verdict(1, "1 failed in 0.1s")[0] is True
+    assert plants.mutant_verdict(0, "1 passed in 0.1s")[0] is False  # green: not proven
+    assert plants.mutant_verdict(2, "ImportError while loading conftest")[0] is False
+    assert plants.mutant_verdict(1, "No module named pytest")[0] is False  # exit 1, no summary
+    assert plants.mutant_verdict(5, "no tests ran")[0] is False
