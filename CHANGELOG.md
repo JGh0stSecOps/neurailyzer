@@ -12,16 +12,22 @@ All notable changes to NeurAIlyzer are documented here. The format follows
   `memory_store.db*`, Grok `memory/`) is now its own scope instead of a
   permanent keep-list entry. Every *other* scope still keeps it
   (`Config.keep_for`), so `wipe session` behaves exactly as before; `wipe
-  memory` and `wipe all --confirm all` take it. Restore uses the keep-list
-  *without* the memory entries (`Config.hard_keep`), so a memory wipe restores
-  byte-for-byte like any other. Over MCP, `memory` can be planned but not
-  committed — the agent asking is the one whose record would vanish.
+  memory` and `wipe all --confirm all` take it. A memory dir that is (or sits
+  under) a symlink below the harness root is skipped and reported, so a
+  redirected `projects/p/memory` cannot widen the wipe. Restore uses the
+  keep-list *without* the memory entries (`Config.hard_keep`) only for a
+  snapshot taken with the memory scope in play, so a memory wipe restores
+  byte-for-byte while a `wipe session` restore point never rolls memory back.
+  Over MCP, memory moves in neither direction: `nl_wipe` will not commit it
+  and `nl_restore` keeps the full keep-list.
 - **Time windows.** `wipe` and `list-state` take `--after <when>` and
   `--before <when>` (ISO-8601, or `30m`/`12h`/`7d`/`2w` back from now).
   `--after` forgets everything since a moment; `--before` is a retention cut.
   Judged per file by `lstat` mtime; out-of-window entries are skipped and
-  counted; database files are named in the plan because they go whole or stay
-  whole. Refused on `remote`. The MCP `nl_wipe` tool takes `after`/`before`.
+  counted; an entry that cannot be dated is an error, not a skip; directories
+  are pruned only when the wipe emptied them; database files are named in the
+  plan because they go whole or stay whole. Refused on `remote` by both `wipe`
+  and `list-state`. The MCP `nl_wipe` tool takes `after`/`before`.
 - `neurailyzer.timewindow` module (`TimeWindow`, `parse_when`).
 
 ### Changed

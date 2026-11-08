@@ -23,6 +23,7 @@ from .config import (
     DEFAULT_CONFIG_PATH,
     ENV_CONFIG,
     FILE_SCOPES,
+    MEMORY_SCOPE,
     REMOTE_SCOPE,
     ConfigError,
     load,
@@ -122,6 +123,12 @@ def list_state(
     """Show what state exists and what a wipe at these scopes *would* affect."""
     cfg = _load_config()
     window = _window(after, before)
+    if window is not None and Scope.remote in scope:
+        err_console.print(
+            "[red]refusing[/red] --after/--before with the remote scope: a provider "
+            "API has no per-item clock. Inspect remote without a window."
+        )
+        raise typer.Exit(code=2)
     title = "neurailyzer list-state"
     if window is not None:
         title += f" ({window.describe()})"
@@ -312,6 +319,13 @@ def wipe(
             f"{preset_id} directory (at [bold]{escape(actual)}[/bold]), so it "
             "is not that harness's state -- left alone"
         )
+    for preset_id, written, actual in cfg.redirected_memory:
+        console.print(
+            f"[yellow]skipped:[/yellow] memory dir {escape(written)} is a symlink "
+            f"(lands on [bold]{escape(actual)}[/bold]); a redirected memory target "
+            f"could turn `wipe memory` into a wipe of whatever it points at -- "
+            f"left alone ({preset_id})"
+        )
     for written, actual in cfg.symlinked_targets:
         console.print(
             f"[yellow]note:[/yellow] {escape(written)} is a symlink -- the wipe lands "
@@ -498,11 +512,13 @@ def restore(
             label="pre-restore",
         )
         console.print(f"[dim]snapshot {pre.id} taken before restoring[/dim]")
-        # hard_keep, not keep: a restore after `wipe memory` must bring the
-        # memory BACK; the full keep-list would skip it as protected
-        plan = store.restore(snap, cfg.hard_keep)
-    else:
-        plan = store.plan_restore(snap, cfg.hard_keep)
+    # A restore may touch memory ONLY if the snapshot was taken with the memory
+    # scope in play (`wipe memory`, `wipe all`, a manual `snapshot`). A
+    # `wipe session` restore point also holds memory bytes (the snapshot covers
+    # the whole root), but rolling memory back from it would undo memory the
+    # agent wrote since -- state the user never asked to touch.
+    keep = cfg.hard_keep if MEMORY_SCOPE in snap.scopes else cfg.keep
+    plan = store.restore(snap, keep) if commit else store.plan_restore(snap, keep)
     _print_restore(plan)
     if plan.errors:
         raise typer.Exit(code=1)

@@ -164,7 +164,9 @@ neurailyzer mcp serve                      # expose the verbs to agents (stdio)
 
 `restore --to` accepts an ISO-8601 time (nearest snapshot at or before it wins) or an exact snapshot id. A commit-restore snapshots the current state first, so even a rollback is reversible. A factory reset (`wipe all --commit`) additionally demands `--confirm all`, and is refused entirely over MCP — that lever is human-only, and so is committing the `memory` scope: an agent may *plan* forgetting its own memory, but only a person at the CLI does it.
 
-`--after` / `--before` take an ISO-8601 moment (`2026-11-01`, `2026-11-01T04:00`; a naive time is your local clock) or a span back from now (`30m`, `12h`, `7d`, `2w`). A file is inside the window by its own modification time, read without following symlinks. The boundary is per **file**: a database such as `state_5.sqlite` carries one mtime for every row, so a window takes it whole or leaves it whole, and the plan says so. The window never applies to `remote` (a provider API has no per-item clock), and the pre-wipe snapshot always covers the whole target, so a windowed wipe restores like any other.
+`--after` / `--before` take an ISO-8601 moment (`2026-11-01`, `2026-11-01T04:00`; a naive time is your local clock) or a span back from now (`30m`, `12h`, `7d`, `2w`). A file is inside the window by its own modification time, read without following symlinks; a file that cannot be dated is reported as an error, never quietly skipped. The boundary is per **file**: a database such as `state_5.sqlite` carries one mtime for every row, so a window takes it whole or leaves it whole, and the plan says so. The window never applies to `remote` (a provider API has no per-item clock), and the pre-wipe snapshot always covers the whole target, so a windowed wipe restores like any other.
+
+Restoring memory follows the same consent rule as wiping it: a snapshot taken by `wipe memory`, `wipe all` or a manual `snapshot` restores memory; a `wipe session` restore point never rolls memory back, and `nl_restore` over MCP never touches memory at all.
 
 ## Contributing
 

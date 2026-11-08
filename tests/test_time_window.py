@@ -39,7 +39,12 @@ def run_cli(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]
 
 def _date(p: Path, when: datetime) -> None:
     ts = when.timestamp()
-    os.utime(p, (ts, ts), follow_symlinks=False)
+    if p.is_symlink():
+        if os.utime not in os.supports_follow_symlinks:
+            return  # Windows: a link keeps its creation time; the test tolerates it
+        os.utime(p, (ts, ts), follow_symlinks=False)
+    else:
+        os.utime(p, (ts, ts))
 
 
 # -- parse_when ---------------------------------------------------------------
@@ -84,6 +89,7 @@ def dated(tmp_path: Path) -> dict[str, Path]:
     root = tmp_path / "sessions"
     (root / "old-dir").mkdir(parents=True)
     (root / "new-dir").mkdir()
+    (root / "old-empty").mkdir()  # untouched, dated long ago: not the window's business
     old = root / "old-dir" / "old.jsonl"
     new = root / "new-dir" / "new.jsonl"
     db = root / "state_5.sqlite"
@@ -98,6 +104,7 @@ def dated(tmp_path: Path) -> dict[str, Path]:
     _date(link, NEW)
     _date(root / "old-dir", OLD)
     _date(root / "new-dir", NEW)
+    _date(root / "old-empty", OLD)
     return {"root": root, "old": old, "new": new, "db": db, "link": link}
 
 
@@ -115,7 +122,29 @@ def test_after_takes_only_what_was_modified_since(dated: dict[str, Path]) -> Non
     assert dated["old"].read_text() == "old"
     assert dated["old"].parent.exists()  # a dir holding out-of-window state stays
     assert not (dated["root"] / "new-dir").exists()  # an emptied dir is pruned
+    assert (dated["root"] / "old-empty").is_dir()  # an untouched empty dir is not
     assert w.verify() is True  # nothing left INSIDE the window
+
+
+def test_an_undatable_entry_is_an_error_not_a_skip(
+    dated: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """lstat failing must fail the plan and the verify: an undated file may be
+    exactly the one the user asked to remove. It is never a quiet 'outside'."""
+    real_lstat = os.lstat
+
+    def flaky(path: Any, *a: Any, **k: Any) -> Any:
+        if Path(path) == dated["new"]:
+            raise OSError(5, "Input/output error")
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr("neurailyzer.wipers.local.os.lstat", flaky)
+    w = PathWiper("session", [dated["root"]], KeepList(), window=TimeWindow(after=CUT))
+    plan = w.plan()
+    assert plan.complete is False
+    assert any("could not date" in n and "new.jsonl" in n for n in plan.notes)
+    assert w.verify() is False
+    assert dated["new"].exists()  # never acted on a guess
 
 
 def test_before_is_the_retention_cut(dated: dict[str, Path]) -> None:
@@ -222,6 +251,10 @@ def test_cli_span_form_and_refusals(home: dict[str, Any]) -> None:
     assert home["old"].exists()
 
     r = run_cli(env, "wipe", "remote", "--after", "7d", "--commit", "--force")
+    assert r.returncode == 2
+    assert "remote" in r.stderr
+
+    r = run_cli(env, "list-state", "-s", "remote", "--after", "7d")
     assert r.returncode == 2
     assert "remote" in r.stderr
 

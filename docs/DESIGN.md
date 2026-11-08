@@ -65,17 +65,27 @@ Scopes compose: `neurailyzer wipe session sandbox`.
 **Memory is kept by every scope but its own.** A preset's `memory` templates
 are wipe targets for the `memory` scope and keep-list entries for every other
 scope (`Config.keep_for`). `wipe session` therefore never takes memory by
-surprise; `wipe memory` and `wipe all` do. Restore honours the keep-list
-*without* the memory entries (`Config.hard_keep`), so a memory wipe is as
-reversible as any other. Over MCP, `memory` may be planned but never
-committed: the agent asking is the one whose record would vanish.
+surprise; `wipe memory` and `wipe all` do. A memory target that is, or sits
+under, a symlink below the harness root is skipped and reported
+(`Config.redirected_memory`): `projects/p/memory -> ~/.claude` must not turn
+`wipe memory` into a wipe of the harness. Restore honours the keep-list
+*without* the memory entries (`Config.hard_keep`) **only when the snapshot
+was taken with the memory scope in play** (`wipe memory`, `wipe all`, a
+manual `snapshot`); a `wipe session` restore point also holds memory bytes,
+but restoring it never rolls memory back. Over MCP, memory moves in neither
+direction: `nl_wipe` refuses to commit it and `nl_restore` always uses the
+full keep-list. The agent asking is the one whose record would change.
 
 **Time windows.** `--after T` and `--before T` narrow any file scope to the
 entries whose own mtime (`lstat`, never the link's destination) falls in the
 window. `--after` is the neuralizer flash (erase all state since T);
 `--before` is the retention cut. The window is per file: a database file goes
-whole or stays whole, and the plan names each such file. It never applies to
-`remote`, and the pre-wipe snapshot covers the whole root regardless.
+whole or stays whole, and the plan names each such file. An entry that cannot
+be dated is an error (incomplete plan, failed verify), never a quiet skip.
+Directories are pruned only when the wipe emptied them; an untouched empty
+directory is state outside the window and stays. The window never applies to
+`remote` (both `wipe` and `list-state` refuse), and the pre-wipe snapshot
+covers the whole root regardless.
 
 **Presets** (`docs/../src/neurailyzer/presets.py`) map a known harness to the
 scopes above plus its keep-list, so `neurailyzer detect --enable` configures a

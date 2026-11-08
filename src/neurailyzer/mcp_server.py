@@ -266,9 +266,12 @@ def build_server(config_path: str | None = None) -> Any:
                 {s: tuple(Path(p) for p in roots) for s, roots in snap.targets.items()},
                 label="pre-restore",
             )
-            plan = store.restore(snap, cfg.hard_keep)  # memory must be restorable
+            # the FULL keep-list: memory never changes over MCP, in either
+            # direction -- nl_wipe refuses to forget it, nl_restore refuses
+            # to roll it back. Both are the human's levers at the CLI.
+            plan = store.restore(snap, cfg.keep)
         else:
-            plan = store.plan_restore(snap, cfg.hard_keep)
+            plan = store.plan_restore(snap, cfg.keep)
         return {
             "ok": not plan.errors,
             "dry_run": not commit,

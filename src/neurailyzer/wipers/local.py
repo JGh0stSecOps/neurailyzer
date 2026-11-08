@@ -105,14 +105,19 @@ class PathWiper(Wiper):
         self.keep = keep
         self.window = window if window is not None and not window.is_open else None
 
-    def _in_window(self, p: Path) -> bool:
+    def _in_window(self, p: Path) -> bool | str:
+        """True/False for a dated entry; the error text when it cannot be dated.
+
+        An undated file is neither in nor out of the window. It stays, and it
+        is an ERROR (incomplete plan, failed verify), never a quiet skip: a
+        file the wiper could not read may be exactly the one asked for.
+        """
         if self.window is None:
             return True
         try:
             return self.window.contains(os.lstat(p).st_mtime)
-        except OSError:
-            # cannot date it, so it stays: the wiper never acts on a guess
-            return False
+        except OSError as exc:
+            return f"could not date {p}: {exc.strerror or exc}"
 
     def _survey(self) -> tuple[list[Path], list[Path], list[Path], list[str], list[Path]]:
         """(doomed entries, doomed dirs, keep-skipped, errors, out-of-window)."""
@@ -127,13 +132,30 @@ class PathWiper(Wiper):
             for p in entries:
                 if self.keep.protects(p):
                     skipped.append(p)
-                elif not self._in_window(p):
+                    continue
+                dated = self._in_window(p)
+                if dated is True:
+                    doomed.append(p)
+                elif dated is False:
                     outside.append(p)
                 else:
-                    doomed.append(p)
+                    errors.append(dated)
+            # With a window, a directory is pruned only if the wipe emptied
+            # it: an ancestor of something doomed. An untouched empty dir
+            # dated 2020 is state outside the window and stays.
+            prunable: set[Path] | None = None
+            if self.window is not None:
+                prunable = set()
+                for p in doomed:
+                    for anc in p.parents:
+                        if anc == root or root not in anc.parents:
+                            break
+                        prunable.add(anc)
             for d in dirs:
                 if self.keep.protects(d) or self.keep.shelters(d):
                     skipped.append(d)
+                elif prunable is not None and d not in prunable:
+                    continue
                 else:
                     # a dir still holding out-of-window files simply fails rmdir
                     doomed_dirs.append(d)

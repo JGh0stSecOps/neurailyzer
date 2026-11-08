@@ -9,9 +9,15 @@ import pytest
 from neurailyzer.config import ConfigError, KeepList, load
 
 
-def test_missing_default_config_is_safe_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_default_config_is_safe_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.delenv("NEURAILYZER_CONFIG", raising=False)
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/nonexistent-home")))
+    # `~` expands through $HOME / %USERPROFILE%, not Path.home(): patch both,
+    # or a developer with a real ~/.neurailyzer/config.toml fails this test
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     cfg = load()
     assert cfg.targets == {}
     assert cfg.source is None

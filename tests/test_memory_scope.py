@@ -85,10 +85,16 @@ def home(tmp_path: Path) -> dict[str, Any]:
     return {"home": h, "claude": claude, "codex": codex, "proj": proj, "env": env, "config": config}
 
 
+def _point_home(monkeypatch: Any, home: Path) -> None:
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows: ~ reads this one
+    monkeypatch.setenv("NEURAILYZER_DISABLE_PROCESS_SCAN", "1")
+    for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def test_memory_is_its_own_scope_in_config(home: dict[str, Any], monkeypatch: Any) -> None:
-    monkeypatch.setenv("HOME", str(home["home"]))
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    monkeypatch.delenv("CODEX_HOME", raising=False)
+    _point_home(monkeypatch, home["home"])
     cfg = load(home["config"])
     mem_roots = {p.resolve() for p in cfg.roots_for(MEMORY_SCOPE)}
     assert (home["proj"] / "memory").resolve() in mem_roots
@@ -177,23 +183,73 @@ def test_mcp_plans_memory_but_refuses_to_commit_it(home: dict[str, Any], monkeyp
 
     from neurailyzer.mcp_server import build_server
 
-    monkeypatch.setenv("HOME", str(home["home"]))
-    monkeypatch.setenv("NEURAILYZER_DISABLE_PROCESS_SCAN", "1")
-    for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
-        monkeypatch.delenv(var, raising=False)
+    _point_home(monkeypatch, home["home"])
     server = build_server(str(home["config"]))
 
-    def call(args: dict[str, Any]) -> Any:
-        result = asyncio.run(server.call_tool("nl_wipe", args))
+    def call(tool: str, args: dict[str, Any]) -> Any:
+        result = asyncio.run(server.call_tool(tool, args))
         assert not result.is_error, result.content
         out = result.structured_content
         return out["result"] if isinstance(out, dict) and set(out) == {"result"} else out
 
-    plan = call({"scopes": ["memory"]})
+    plan = call("nl_wipe", {"scopes": ["memory"]})
     assert plan["ok"] is True and plan["dry_run"] is True
     assert any(p["scope"] == "memory" and p["items"] > 0 for p in plan["plans"])
 
-    refused = call({"scopes": ["memory"], "commit": True, "force": True})
+    refused = call("nl_wipe", {"scopes": ["memory"], "commit": True, "force": True})
     assert refused["ok"] is False
     assert "memory" in refused["reason"] and "CLI" in refused["reason"]
-    assert (home["proj"] / "memory" / "fact.md").exists()  # refused means untouched
+    fact = home["proj"] / "memory" / "fact.md"
+    assert fact.exists()  # refused means untouched
+
+    # the other direction: a human took a memory-scoped restore point at the
+    # CLI, then memory changed; an agent restoring over MCP must not roll it back
+    r = run_cli(home["env"], "wipe", "memory", "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    snap_id = _SNAP_ID.findall(r.stdout)[0]
+    fact.parent.mkdir(exist_ok=True)
+    fact.write_text("written after the snapshot\n")
+    out = call("nl_restore", {"to": snap_id, "commit": True, "force": True})
+    assert out["ok"] is True
+    assert fact.read_text() == "written after the snapshot\n"
+    assert str(fact) in out["keep_list_skipped"]
+
+
+@pytest.mark.e2e
+def test_session_restore_never_rolls_memory_back(home: dict[str, Any]) -> None:
+    """A `wipe session` restore point holds memory bytes too (the snapshot
+    covers the whole root). Restoring it must not undo memory the agent wrote
+    since: the user asked for transcripts back, not for memory to time-travel."""
+    env, proj = home["env"], home["proj"]
+    fact = proj / "memory" / "fact.md"
+    r = run_cli(env, "wipe", "session", "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    snap_id = _SNAP_ID.findall(r.stdout)[0]
+    fact.write_text("learned after the wipe\n")
+    (proj / "memory" / "newer.md").write_text("also after\n")
+
+    r = run_cli(env, "restore", "--to", snap_id, "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert (proj / "sess-1.jsonl").exists()  # the transcript came back ...
+    assert fact.read_text() == "learned after the wipe\n"  # ... memory did not move
+    assert (proj / "memory" / "newer.md").exists()
+
+
+@pytest.mark.e2e
+def test_symlinked_memory_dir_is_skipped_not_followed(home: dict[str, Any]) -> None:
+    """projects/p/memory -> ~/.claude would make `wipe memory` a wipe of the
+    whole harness. A memory target that is a link below the harness root is
+    skipped and reported; `wipe memory` then touches nothing it points at."""
+    env, claude = home["env"], home["claude"]
+    trap = claude / "projects" / "-trap"
+    trap.mkdir()
+    (trap / "memory").symlink_to(claude, target_is_directory=True)
+    (trap / "sess.jsonl").write_text("transcript\n")
+
+    r = run_cli(env, "wipe", "memory", "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "skipped" in r.stdout and "symlink" in r.stdout
+    assert (trap / "sess.jsonl").exists()  # not that scope's business
+    assert (claude / "history.jsonl").exists()  # nothing behind the link moved
+    assert (trap / "memory").is_symlink()
+    assert not (home["proj"] / "memory" / "fact.md").exists()  # real memory still wiped

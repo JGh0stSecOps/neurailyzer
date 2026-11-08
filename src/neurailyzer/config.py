@@ -249,6 +249,10 @@ class Config:
     #: their own harness root. These are SKIPPED: a link out of the harness
     #: dir points at something that is not that harness's scratch.
     escaped_targets: tuple[tuple[str, str, str], ...] = ()
+    #: (preset, path, destination) for MEMORY targets that are, or sit under,
+    #: a symlink below the harness root. SKIPPED: a redirected memory dir
+    #: would let `wipe memory` land on whatever the link points at.
+    redirected_memory: tuple[tuple[str, str, str], ...] = ()
     snapshot_dir: Path = field(default_factory=lambda: DEFAULT_SNAPSHOT_DIR.expanduser().resolve())
     retention: int = DEFAULT_RETENTION
     #: where this config was loaded from (None = defaults, no file found).
@@ -264,6 +268,29 @@ class Config:
         full list. Fails closed: an unknown scope gets the full list too.
         """
         return self.hard_keep if scope == MEMORY_SCOPE else self.keep
+
+
+def _redirected_below_root(path: Path, roots_literal: set[Path], roots_resolved: set[Path]) -> bool:
+    """True if *path* or any ancestor BELOW its harness root is a symlink.
+
+    Walks up from the path. Reaching a harness root (by literal spelling or
+    by resolved identity) ends the walk: the root itself may be a link (stow,
+    chezmoi). A link anywhere beneath it redirects the target and is refused.
+    """
+    for cand in (path, *path.parents):
+        if cand in roots_literal:
+            return False
+        # is_symlink BEFORE the resolved check: a link that points AT the
+        # harness root would otherwise read as "reached the root" and pass --
+        # the exact redirect this guard exists to catch.
+        if cand.is_symlink():
+            return True
+        try:
+            if cand.resolve() in roots_resolved:
+                return False
+        except OSError:
+            return True  # cannot tell where it lands: refuse
+    return False
 
 
 def _parse_paths(section: str, value: object) -> tuple[Path, ...]:
@@ -339,6 +366,9 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
     #: (preset, template path, where it actually resolves) for preset targets
     #: that point outside their own harness root -- skipped, never wiped.
     escaped_targets: list[tuple[str, str, str]] = []
+    #: (preset, memory path, where it actually resolves) for memory targets
+    #: that are symlinks below the harness root -- skipped, never wiped.
+    redirected_memory: list[tuple[str, str, str]] = []
     preset_caveats: list[str] = []
     if enabled:
         from . import presets as presets_mod
@@ -369,6 +399,8 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                 )
                 if not r.is_symlink()
             }
+            detect_literals = set(presets_mod.expand_existing(preset.detect))
+            detect_resolved = {r.resolve() for r in detect_literals}
             for scope_name, templates in (
                 ("session", preset.session),
                 ("sandbox", preset.sandbox),
@@ -376,6 +408,17 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
             ):
                 for path in presets_mod.expand_existing(templates):
                     resolved = path.resolve()
+                    if scope_name == MEMORY_SCOPE and _redirected_below_root(
+                        path, detect_literals, detect_resolved
+                    ):
+                        # A memory dir that is itself a symlink (or sits under
+                        # one) lands SOMEWHERE ELSE -- and "somewhere else
+                        # inside the harness" is exactly the attack: point
+                        # projects/p/memory at ~/.claude and `wipe memory`
+                        # becomes `wipe everything`. The harness ROOT may be a
+                        # link (stow); nothing below it may be.
+                        redirected_memory.append((pid, str(path), str(resolved)))
+                        continue
                     if any(resolved == root or root in resolved.parents for root in own):
                         preset_targets[scope_name].append(path)
                         continue
@@ -519,6 +562,7 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         remote=remote,
         symlinked_targets=tuple(symlinked_targets),
         escaped_targets=tuple(escaped_targets),
+        redirected_memory=tuple(redirected_memory),
         caveats=tuple(dict.fromkeys(preset_caveats)),
         presets=tuple(enabled),
         snapshot_dir=snapshot_dir,
