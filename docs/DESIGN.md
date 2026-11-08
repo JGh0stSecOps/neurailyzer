@@ -76,6 +76,14 @@ but restoring it never rolls memory back. Over MCP, memory moves in neither
 direction: `nl_wipe` refuses to commit it and `nl_restore` always uses the
 full keep-list. The agent asking is the one whose record would change.
 
+**Explicit targets are taken as written.** A `[targets.<scope>]` path is the
+user's instruction: if it is a symlink the wipe lands on its destination and
+the plan says so (`symlinked_targets`). One shape is refused at config load
+for every scope: a target that links to its own ancestor
+(`.../projects/p/memory -> .../.claude`), which is never a dotfiles layout
+and always means "wipe my parent tree". The preset redirect guard is
+stricter because preset paths are implicit trust, not a user's own words.
+
 **Time windows.** `--after T` and `--before T` narrow any file scope to the
 entries whose own mtime (`lstat`, never the link's destination) falls in the
 window. `--after` is the neuralizer flash (erase all state since T);

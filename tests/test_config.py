@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -105,3 +106,26 @@ def test_env_var_discovery(state: dict[str, Path], monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("NEURAILYZER_CONFIG", str(state["config"]))
     cfg = load()
     assert cfg.roots_for("sandbox") == (state["sandbox"],)
+
+
+def test_explicit_target_linking_to_its_own_ancestor_is_refused(tmp_path: Path) -> None:
+    """`[targets.X] paths = [".../projects/p/memory"]` where that path is a
+    symlink to `.../.claude` would make the wipe root the whole harness dir,
+    credentials included. A link to an ancestor is never a dotfiles layout;
+    it is "wipe my parent tree", so config load refuses it for every scope."""
+    if sys.platform == "win32":
+        pytest.skip("directory symlinks need a privilege on Windows runners")
+    harness = tmp_path / ".claude"
+    (harness / "projects" / "p").mkdir(parents=True)
+    (harness / ".credentials.json").write_text("secret")
+    link = harness / "projects" / "p" / "memory"
+    link.symlink_to(harness, target_is_directory=True)
+    for scope in ("memory", "session"):
+        cfg = tmp_path / f"{scope}.toml"
+        cfg.write_text(
+            f'[targets.{scope}]\npaths = ["{link.as_posix()}"]\n\n'
+            f'[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+        )
+        with pytest.raises(ConfigError, match="ancestor"):
+            load(cfg)
+    assert (harness / ".credentials.json").exists()

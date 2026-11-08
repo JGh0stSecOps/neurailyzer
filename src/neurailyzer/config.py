@@ -554,6 +554,15 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
             for written, resolved in zip(raw_paths, paths, strict=False):
                 as_written = Path(os.path.expandvars(str(written))).expanduser()
                 if as_written != resolved:
+                    # `.../projects/p/memory -> .../.claude`: the wipe root
+                    # would become the parent tree, credentials included. A
+                    # link to an ancestor is never a dotfiles layout; refuse.
+                    if resolved in as_written.parents:
+                        raise ConfigError(
+                            f"[targets.{scope}] refusing target {as_written}: it is a "
+                            f"symlink to its own ancestor {resolved} -- following it "
+                            "would wipe the parent tree, not the target"
+                        )
                     symlinked_targets.append((str(as_written), str(resolved)))
         for p in paths:
             reason = _forbidden_target_reason(p)

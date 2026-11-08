@@ -204,6 +204,12 @@ PLANTS: tuple[Plant, ...] = (
             ),
         ),
     ),
+    Plant(
+        "explicit-target-ancestor-link-refused",
+        "src/neurailyzer/config.py",
+        "tests/test_config.py::test_explicit_target_linking_to_its_own_ancestor_is_refused",
+        (("                if resolved in as_written.parents:", "                if False:"),),
+    ),
     # -- time windows ---------------------------------------------------------
     Plant(
         "window-filter",

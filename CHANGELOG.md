@@ -50,6 +50,10 @@ All notable changes to NeurAIlyzer are documented here. The format follows
   unknown, not "none": over MCP it is refused rather than guessed, whatever
   is configured today (the CLI may still restore it).
 
+- A `[targets.<scope>]` path that is a symlink to its own ancestor (the
+  harness root, say) is refused at config load for every scope: following it
+  would make the wipe root the whole parent tree, credentials included.
+
 ### Changed
 - `wipe all` now includes `memory`. Before, the README promised to reset an
   agent's "memory" while the `claude-code` preset protected it under every
