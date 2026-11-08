@@ -413,10 +413,10 @@ def test_restore_keeps_memory_protected_after_the_preset_is_disabled(
 def test_mcp_restore_refuses_a_snapshot_with_no_memory_record(
     home: dict[str, Any], monkeypatch: Any, tmp_path: Path
 ) -> None:
-    """A pre-0.2 manifest records no memory paths, so MCP cannot know which
-    of ITS paths were memory -- even when today's config names another
-    harness's memory (codex here). It refuses instead of guessing; the CLI
-    (a human) may still restore it."""
+    """A manifest with no memory record (pre-0.2, or a library caller that
+    passed none) cannot say which of ITS paths were memory -- even when
+    today's config names another harness's memory (codex here). MCP refuses
+    instead of guessing; the CLI (a human) may still restore it."""
     pytest.importorskip("mcp", reason="mcp extra not installed")
     import json
 
@@ -426,11 +426,10 @@ def test_mcp_restore_refuses_a_snapshot_with_no_memory_record(
     _point_home(monkeypatch, home["home"])
     snapdir = tmp_path / "snaps"
     store = SnapshotStore(snapdir)
-    snap = store.take({"session": (home["proj"],)}, "old-style")
+    snap = store.take({"session": (home["proj"],)}, "library-no-record")
     manifest = snapdir / "manifests" / f"{snap.id}.json"
     data = json.loads(manifest.read_text())
-    data.pop("memory_keep")  # a pre-0.2 manifest: no record at all
-    manifest.write_text(json.dumps(data))
+    assert data["memory_keep"] is None  # omitted = unknown, never "none"
     fact = home["proj"] / "memory" / "fact.md"
     fact.write_text("changed after the old snapshot\n")
     for enabled in ("[]", '["codex"]'):  # bare, and an UNRELATED memory preset still on

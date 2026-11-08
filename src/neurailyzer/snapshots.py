@@ -247,12 +247,11 @@ class SnapshotStore:
         ``memory_keep`` is the record of which paths are agent memory
         (``Config.memory_keep.as_record()``); it travels with the restore
         point so memory stays protected on restore even after the preset
-        that named it is gone. Omitted, an EMPTY record is written -- "none
-        known" -- which is distinct from a pre-0.2 manifest that has no
-        record at all (``Snapshot.memory_keep is None``).
+        that named it is gone. Omitted, it is recorded as UNKNOWN (``null``),
+        exactly like a pre-0.2 manifest, and a restore over MCP refuses the
+        snapshot. A caller who knows there is no memory says so explicitly:
+        ``memory_keep={"paths": [], "patterns": []}``.
         """
-        if memory_keep is None:
-            memory_keep = {"paths": [], "patterns": []}
         self._mkdir_private(self.blob_dir)
         self._mkdir_private(self.manifest_dir)
         if os.name != "nt":

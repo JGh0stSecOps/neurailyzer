@@ -115,6 +115,18 @@ PLANTS: tuple[Plant, ...] = (
         ),
     ),
     Plant(
+        "omitted-memory-record-stays-unknown",
+        "src/neurailyzer/snapshots.py",
+        "tests/test_memory_scope.py::test_mcp_restore_refuses_a_snapshot_with_no_memory_record",
+        (
+            (
+                "            memory_keep=memory_keep,\n        )\n        manifest = {",
+                '            memory_keep=memory_keep or {"paths": [], "patterns": []},\n'
+                "        )\n        manifest = {",
+            ),
+        ),
+    ),
+    Plant(
         "cli-restore-recorded-memory-keep",
         "src/neurailyzer/cli.py",
         "tests/test_memory_scope.py::test_restore_keeps_memory_protected_after_the_preset_is_disabled",

@@ -45,9 +45,10 @@ All notable changes to NeurAIlyzer are documented here. The format follows
   cannot shadow the real memory dir and leave it silently un-wiped.
 - Every snapshot records which paths were agent memory when it was taken;
   restore honours that record, so disabling a preset between snapshot and
-  restore cannot turn a session restore into a memory rollback. Over MCP, a
-  pre-0.2 snapshot with no such record is refused rather than guessed,
-  whatever is configured today (the CLI may still restore it).
+  restore cannot turn a session restore into a memory rollback. A snapshot
+  with no such record (pre-0.2, or a library caller that passed none) is
+  unknown, not "none": over MCP it is refused rather than guessed, whatever
+  is configured today (the CLI may still restore it).
 
 ### Changed
 - `wipe all` now includes `memory`. Before, the README promised to reset an
