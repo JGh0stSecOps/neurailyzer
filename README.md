@@ -5,7 +5,7 @@
   <img src="assets/wordmark-light.svg" alt="NeurAIlyzer" width="340">
 </picture>
 
-**State hygiene for AI agents — for any model, any stack.** Erase everything an agent accumulated after a moment you choose — transcripts, scratch, *and* its memory — and roll it all back if you change your mind.
+**State hygiene for AI agents — for any model, any stack.** Erase everything an agent accumulated after a moment you choose — transcripts, scratch, *and* its memory — and roll the local state back if you change your mind.
 
 
 [Design](docs/DESIGN.md) · [Wipe taxonomy](docs/WIPE-TAXONOMY.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
@@ -24,7 +24,7 @@ Long-running agent systems don't drift because their **weights** change — the 
 
 1. **Wipes** the accumulated state — locally *and* on remote providers, wherever an API/CLI allows it — at a scope you choose, optionally **only what changed since a moment** (`--after 2026-11-01`, `--after 7d`).
 2. **Protects** a keep-list — credentials, settings, the install, and the paths you mark are never touched. The agent's durable **memory** is kept by every scope except its own, so you forget it only on purpose.
-3. **Snapshots + restores** — every wipe takes a restore point first, so you can roll state back to a **point in time you provide**. A full reset is one command and one `restore` away from undone.
+3. **Snapshots + restores** — every wipe takes a restore point first, so you can roll state back to a **point in time you provide**. A full reset of **local file state** is one command and one `restore` away from undone. Provider-side (`remote`) deletes are the exception: the snapshot records *what* existed, but no API brings it back.
 
 ## Works with your models — not one stack
 
@@ -156,6 +156,7 @@ neurailyzer wipe session --after 7d        # dry-run: only transcripts touched i
 neurailyzer wipe sandbox --before 2026-10-01 --commit   # retention cut: drop scratch older than October
 neurailyzer wipe memory --commit           # forget the agent's durable memory (kept by every other scope)
 neurailyzer wipe all --commit --confirm all   # the full flash: every scope, memory included, snapshot first
+                                           # (includes any configured `remote` surfaces -- those deletes are NOT restorable)
 neurailyzer snapshot --list                # your restore points
 neurailyzer restore --to 2026-07-09T04:00  # dry-run a point-in-time rollback
 neurailyzer restore --to 2026-07-09T04:00 --commit
