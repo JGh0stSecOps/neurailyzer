@@ -21,7 +21,10 @@ from neurailyzer.config import KeepList, load
 from neurailyzer.timewindow import TimeWindow, TimeWindowError, parse_when
 from neurailyzer.wipers.local import PathWiper
 
-NOW = datetime(2026, 11, 8, 0, 0, tzinfo=UTC)
+# the fixture clock is the REAL clock: `--after 7d` in the CLI tests is read
+# against datetime.now(), so a fixed NOW would make them expire a week after
+# it. parse_when tests pass `now=NOW` explicitly and stay deterministic.
+NOW = datetime.now(UTC).replace(microsecond=0)
 OLD = NOW - timedelta(days=30)
 NEW = NOW - timedelta(hours=1)
 CUT = NOW - timedelta(days=7)

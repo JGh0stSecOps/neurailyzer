@@ -143,7 +143,7 @@ A configurable allow-list of paths / collections / memory keys that are **never*
 - **Keep-list.** Honored on every wipe (§8).
 - **Scoped credentials.** Remote adapters read least-privilege, per-provider tokens from the **environment** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`) — never a broad admin token, never logged, never stored in config. OS-keyring sourcing is a possible future addition; today it is env vars only.
 - **Confirmation token** for `--scope all --commit` (type the target name).
-- **Human-only levers over MCP.** `all`, `remote` and `memory` can be planned by an agent but committed only at the CLI.
+- **Human-only levers over MCP.** `all` is refused outright over MCP (not even a plan); `remote` and `memory` can be planned by an agent but committed only at the CLI.
 - **Time windows refuse the remote scope.** A provider API has no per-item clock; applying a window there would silently delete more than asked on the one scope that cannot be restored.
 
 ## 10. Threat model
