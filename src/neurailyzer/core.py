@@ -179,6 +179,7 @@ def execute_wipe(
                 for pid, p in manifests.items()
             }
             or None,
+            memory_keep=config.memory_keep.as_record(),
         )
         store.prune(config.retention)
 

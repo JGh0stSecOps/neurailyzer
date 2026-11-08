@@ -26,6 +26,7 @@ from .config import (
     MEMORY_SCOPE,
     REMOTE_SCOPE,
     ConfigError,
+    KeepList,
     load,
 )
 from .config import Config as Config  # noqa: PLC0414 — re-exported for library use
@@ -282,7 +283,7 @@ def snapshot(
     if not targets:
         console.print("[yellow]nothing to snapshot[/yellow] -- no targets configured.")
         raise typer.Exit(code=1)
-    snap = store.take(targets, label)
+    snap = store.take(targets, label, memory_keep=cfg.memory_keep.as_record())
     store.prune(cfg.retention)
     console.print(
         f"[green]snapshot[/green] {snap.id} ({snap.file_count} file(s), {snap.total_bytes} bytes)"
@@ -524,6 +525,7 @@ def restore(
         pre = store.take(
             {s: tuple(Path(p) for p in roots) for s, roots in snap.targets.items()},
             label="pre-restore",
+            memory_keep=cfg.memory_keep.as_record(),
         )
         console.print(f"[dim]snapshot {pre.id} taken before restoring[/dim]")
     # A restore may touch memory ONLY if the snapshot was taken with the memory
@@ -531,7 +533,14 @@ def restore(
     # `wipe session` restore point also holds memory bytes (the snapshot covers
     # the whole root), but rolling memory back from it would undo memory the
     # agent wrote since -- state the user never asked to touch.
-    keep = cfg.keep_for(MEMORY_SCOPE) if MEMORY_SCOPE in snap.scopes else cfg.keep
+    # The memory protection recorded WITH the snapshot is honoured too: a
+    # preset disabled since then must not turn a session restore into a
+    # memory rollback.
+    keep = (
+        cfg.keep_for(MEMORY_SCOPE)
+        if MEMORY_SCOPE in snap.scopes
+        else cfg.keep.merged(KeepList.from_record(snap.memory_keep))
+    )
     plan = store.restore(snap, keep) if commit else store.plan_restore(snap, keep)
     _print_restore(plan)
     if plan.errors:

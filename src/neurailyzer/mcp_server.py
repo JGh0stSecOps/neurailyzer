@@ -23,6 +23,7 @@ from .config import (
     REMOTE_SCOPE,
     Config,
     ConfigError,
+    KeepList,
     load,
 )
 from .snapshots import SnapshotError, SnapshotStore
@@ -114,7 +115,7 @@ def build_server(config_path: str | None = None) -> Any:
         if not targets:
             return {"ok": False, "reason": "no targets configured"}
         store = SnapshotStore(cfg.snapshot_dir)
-        snap = store.take(targets, label)
+        snap = store.take(targets, label, memory_keep=cfg.memory_keep.as_record())
         store.prune(cfg.retention)
         return {
             "ok": True,
@@ -257,6 +258,20 @@ def build_server(config_path: str | None = None) -> Any:
             return {"ok": False, "reason": str(exc)}
         if snap is None:
             return {"ok": False, "reason": f"no snapshot at or before {to!r}"}
+        # Memory never changes over MCP, in either direction: nl_wipe refuses
+        # to forget it, nl_restore refuses to roll it back. The protection is
+        # the memory keep RECORDED with the snapshot plus today's; a snapshot
+        # that recorded none, on a config that names none, cannot establish
+        # it -- so it is refused rather than guessed.
+        recorded = KeepList.from_record(snap.memory_keep)
+        if recorded is None and not (cfg.memory_keep.paths or cfg.memory_keep.patterns):
+            return {
+                "ok": False,
+                "reason": "this snapshot carries no record of which paths are agent "
+                "memory and the current config names none, so a restore over MCP "
+                "cannot keep memory protected. Restore it at the CLI.",
+            }
+        keep = cfg.keep.merged(recorded)
         if commit:
             # A restore rewrites and deletes files, so the same live-harness
             # hazard applies -- and an agent restoring mid-session IS the
@@ -277,13 +292,11 @@ def build_server(config_path: str | None = None) -> Any:
             store.take(
                 {s: tuple(Path(p) for p in roots) for s, roots in snap.targets.items()},
                 label="pre-restore",
+                memory_keep=cfg.memory_keep.as_record(),
             )
-            # the FULL keep-list: memory never changes over MCP, in either
-            # direction -- nl_wipe refuses to forget it, nl_restore refuses
-            # to roll it back. Both are the human's levers at the CLI.
-            plan = store.restore(snap, cfg.keep)
+            plan = store.restore(snap, keep)
         else:
-            plan = store.plan_restore(snap, cfg.keep)
+            plan = store.plan_restore(snap, keep)
         return {
             "ok": not plan.errors,
             "dry_run": not commit,

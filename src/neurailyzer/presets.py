@@ -102,10 +102,12 @@ def expand_existing(templates: tuple[str, ...]) -> tuple[Path, ...]:
     ``state_5.sqlite``) or nest per-profile/per-project trees — hardcoding
     those would silently rot.
 
-    Two spellings of one real path are deduplicated, and the spelling that is
-    NOT a symlink wins: a link alias ``projects/a/memory -> ../z/memory`` must
+    Two spellings of one real path are deduplicated, and the spelling with the
+    FEWEST symlink components wins: a link alias (``projects/a/memory ->
+    ../z/memory``, or a linked project dir ``projects/a -> projects/z``) must
     never shadow the real ``projects/z/memory``, or the redirect guard skips
-    the alias and the real memory is silently never wiped.
+    the alias and the real memory is silently never wiped. A stow-managed
+    root is a link both spellings share, so it never decides.
     """
     candidates: list[Path] = []
     for t in templates:
@@ -115,15 +117,21 @@ def expand_existing(templates: tuple[str, ...]) -> tuple[Path, ...]:
             )
         else:
             candidates.append(_expand(t))
-    out: dict[Path, Path] = {}  # resolved -> chosen spelling
+    out: dict[Path, tuple[int, Path]] = {}  # resolved -> (link components, spelling)
     for c in candidates:
         if not c.exists():
             continue
         r = c.resolve()
+        depth = _link_components(c)
         prior = out.get(r)
-        if prior is None or (prior.is_symlink() and not c.is_symlink()):
-            out[r] = c
-    return tuple(out.values())
+        if prior is None or depth < prior[0]:
+            out[r] = (depth, c)
+    return tuple(spelling for _depth, spelling in out.values())
+
+
+def _link_components(path: Path) -> int:
+    """How many of *path*'s components (itself included) are symlinks."""
+    return sum(1 for p in (path, *path.parents) if p.is_symlink())
 
 
 def expand_all(templates: tuple[str, ...]) -> tuple[Path, ...]:

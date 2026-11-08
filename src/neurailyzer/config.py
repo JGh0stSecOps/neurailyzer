@@ -198,6 +198,35 @@ class KeepList:
     def _keys(self) -> set[str]:
         return {k for p in self.paths for k in _spellings(p)}
 
+    def merged(self, other: KeepList | None) -> KeepList:
+        """This list plus *other*'s entries (duplicates harmless)."""
+        if other is None:
+            return self
+        return KeepList(
+            paths=(*self.paths, *other.paths),
+            patterns=(*self.patterns, *other.patterns),
+            collections=(*self.collections, *other.collections),
+            memory_keys=(*self.memory_keys, *other.memory_keys),
+        )
+
+    def as_record(self) -> dict[str, list[str]]:
+        """A JSON-safe record of the path/pattern entries (for a manifest)."""
+        return {"paths": [str(p) for p in self.paths], "patterns": list(self.patterns)}
+
+    @classmethod
+    def from_record(cls, data: object) -> KeepList | None:
+        """Rebuild from ``as_record`` output; None when absent or malformed."""
+        if not isinstance(data, Mapping):
+            return None
+        paths = data.get("paths", [])
+        patterns = data.get("patterns", [])
+        if not (isinstance(paths, list) and isinstance(patterns, list)):
+            return None
+        return cls(
+            paths=tuple(Path(str(p)) for p in paths),
+            patterns=tuple(str(p) for p in patterns),
+        )
+
     def protects(self, path: Path) -> bool:
         """True if *path* is a keep entry, lives under one, or matches a pattern."""
         keys = self._keys()
@@ -233,6 +262,11 @@ class Config:
     #: memory wipe; the full ``keep`` would skip it). Never used by any other
     #: wiper.
     hard_keep: KeepList | None = None
+    #: the memory entries alone (preset `memory` templates + [targets.memory]).
+    #: Recorded into every snapshot so a restore can keep protecting memory
+    #: even after the preset is disabled -- the protection travels with the
+    #: restore point, not with whatever the config says today.
+    memory_keep: KeepList = field(default_factory=KeepList)
     #: scope -> absolute target roots (FILE_SCOPES only).
     targets: Mapping[str, tuple[Path, ...]] = field(default_factory=dict)
     #: provider id -> enabled remote surfaces (see wipers/remote.py).
@@ -404,12 +438,12 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                 )
                 if not r.is_symlink()
             }
-            # EVERY existing spelling of the harness root, not the deduplicated
-            # set: with `~/.claude -> $CLAUDE_CONFIG_DIR` (stow) both spellings
-            # are the root, and a memory path reached through either must stop
-            # the redirect walk at the root rather than read the root's own
-            # link as a redirect below it.
-            detect_literals = {p for p in presets_mod.expand_all(preset.detect) if p.exists()}
+            # expand_existing keeps, for each real path, the spelling with the
+            # fewest symlink components -- so with `~/.claude -> $CLAUDE_CONFIG_DIR`
+            # (stow) both the root and the memory paths come back in the real
+            # spelling and the redirect walk below stops at the root instead of
+            # reading the root's own link as a redirect beneath it.
+            detect_literals = set(presets_mod.expand_existing(preset.detect))
             detect_resolved = {r.resolve() for r in detect_literals}
             for scope_name, templates in (
                 ("session", preset.session),
@@ -561,13 +595,12 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         patterns=(*keep_patterns, *preset_keep_patterns),
     )
     # ... and every other scope additionally keeps the memory targets.
-    keep = KeepList(
-        paths=(*hard_keep.paths, *memory_keep_paths),
-        patterns=(*hard_keep.patterns, *memory_keep_patterns),
-    )
+    memory_keep = KeepList(paths=tuple(memory_keep_paths), patterns=tuple(memory_keep_patterns))
+    keep = hard_keep.merged(memory_keep)
     return Config(
         keep=keep,
         hard_keep=hard_keep,
+        memory_keep=memory_keep,
         targets=targets,
         remote=remote,
         symlinked_targets=tuple(symlinked_targets),

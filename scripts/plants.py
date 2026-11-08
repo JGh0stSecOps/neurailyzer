@@ -70,8 +70,8 @@ PLANTS: tuple[Plant, ...] = (
         "tests/test_memory_scope.py::test_session_restore_never_rolls_memory_back",
         (
             (
-                "keep = cfg.keep_for(MEMORY_SCOPE) if MEMORY_SCOPE in snap.scopes else cfg.keep",
-                "keep = cfg.keep_for(MEMORY_SCOPE)",
+                "        if MEMORY_SCOPE in snap.scopes\n",
+                "        if True\n",
             ),
         ),
     ),
@@ -81,8 +81,8 @@ PLANTS: tuple[Plant, ...] = (
         "tests/test_memory_scope.py::test_wipe_all_forgets_everything_and_restore_brings_it_back",
         (
             (
-                "keep = cfg.keep_for(MEMORY_SCOPE) if MEMORY_SCOPE in snap.scopes else cfg.keep",
-                "keep = cfg.keep",
+                "        cfg.keep_for(MEMORY_SCOPE)\n        if MEMORY_SCOPE in snap.scopes\n",
+                "        cfg.keep\n        if MEMORY_SCOPE in snap.scopes\n",
             ),
         ),
     ),
@@ -90,7 +90,46 @@ PLANTS: tuple[Plant, ...] = (
         "mcp-restore-full-keep",
         "src/neurailyzer/mcp_server.py",
         "tests/test_memory_scope.py::test_mcp_plans_memory_but_refuses_to_commit_it",
-        (("plan = store.restore(snap, cfg.keep)", "plan = store.restore(snap, cfg.hard_keep)"),),
+        (
+            (
+                "        keep = cfg.keep.merged(recorded)\n",
+                "        keep = cfg.keep_for(MEMORY_SCOPE)\n",
+            ),
+        ),
+    ),
+    Plant(
+        "mcp-restore-recorded-memory-keep",
+        "src/neurailyzer/mcp_server.py",
+        "tests/test_memory_scope.py::test_restore_keeps_memory_protected_after_the_preset_is_disabled",
+        (("        keep = cfg.keep.merged(recorded)\n", "        keep = cfg.keep\n"),),
+    ),
+    Plant(
+        "mcp-restore-refuses-without-memory-record",
+        "src/neurailyzer/mcp_server.py",
+        "tests/test_memory_scope.py::test_mcp_restore_refuses_a_snapshot_with_no_memory_record_on_a_bare_config",
+        (
+            (
+                "if recorded is None and not (cfg.memory_keep.paths or cfg.memory_keep.patterns):",
+                "if False:",
+            ),
+        ),
+    ),
+    Plant(
+        "cli-restore-recorded-memory-keep",
+        "src/neurailyzer/cli.py",
+        "tests/test_memory_scope.py::test_restore_keeps_memory_protected_after_the_preset_is_disabled",
+        (
+            (
+                "        else cfg.keep.merged(KeepList.from_record(snap.memory_keep))\n",
+                "        else cfg.keep\n",
+            ),
+        ),
+    ),
+    Plant(
+        "snapshot-records-memory-keep",
+        "src/neurailyzer/core.py",
+        "tests/test_memory_scope.py::test_restore_keeps_memory_protected_after_the_preset_is_disabled",
+        (("            memory_keep=config.memory_keep.as_record(),\n", ""),),
     ),
     Plant(
         "memory-symlink-redirect",
@@ -99,14 +138,13 @@ PLANTS: tuple[Plant, ...] = (
         (("        if cand.is_symlink():\n            return True\n", ""),),
     ),
     Plant(
-        "stow-root-all-spellings",
-        "src/neurailyzer/config.py",
+        "stow-root-real-spelling-wins",
+        "src/neurailyzer/presets.py",
         "tests/test_memory_scope.py::test_stow_managed_root_does_not_false_skip_memory",
         (
             (
-                "detect_literals = {p for p in presets_mod.expand_all(preset.detect)"
-                " if p.exists()}",
-                "detect_literals = set(presets_mod.expand_existing(preset.detect))",
+                "return sum(1 for p in (path, *path.parents) if p.is_symlink())",
+                "return int(path.is_symlink())",
             ),
         ),
     ),
@@ -138,8 +176,19 @@ PLANTS: tuple[Plant, ...] = (
         "tests/test_memory_scope.py::test_symlink_alias_does_not_shadow_the_real_memory_dir",
         (
             (
-                "if prior is None or (prior.is_symlink() and not c.is_symlink()):",
+                "if prior is None or depth < prior[0]:",
                 "if prior is None:",
+            ),
+        ),
+    ),
+    Plant(
+        "fewest-link-components-wins-dedup",
+        "src/neurailyzer/presets.py",
+        "tests/test_memory_scope.py::test_symlinked_project_dir_does_not_shadow_the_real_memory_dir",
+        (
+            (
+                "return sum(1 for p in (path, *path.parents) if p.is_symlink())",
+                "return int(path.is_symlink())",
             ),
         ),
     ),

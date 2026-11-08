@@ -39,9 +39,15 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 - Preset templates expand `~` and `$VARS` as **literals** before globbing: a
   home directory such as `/Users/home[1]` no longer turns `[1]` into pattern
   syntax that selects the sibling `/Users/home1` (every scope, since 0.1.0).
-- When two spellings resolve to one path, the non-symlink spelling wins
-  deduplication, so a link alias cannot shadow the real memory dir and leave
-  it silently un-wiped.
+- When two spellings resolve to one path, the spelling with the fewest
+  symlink components wins deduplication, so a link alias (a linked memory
+  dir, a linked project dir, or a stow-managed root beside its real path)
+  cannot shadow the real memory dir and leave it silently un-wiped.
+- Every snapshot records which paths were agent memory when it was taken;
+  restore honours that record, so disabling a preset between snapshot and
+  restore cannot turn a session restore into a memory rollback. Over MCP, a
+  pre-0.2 snapshot with no such record on a config that names no memory is
+  refused rather than guessed.
 
 ### Changed
 - `wipe all` now includes `memory`. Before, the README promised to reset an

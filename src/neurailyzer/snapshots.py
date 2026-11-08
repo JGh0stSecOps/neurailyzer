@@ -99,6 +99,9 @@ class Snapshot:
     #: provider -> what existed remotely at T. Remote deletes are one-way, so
     #: this is a RECORD, not restorable content (DESIGN 7).
     remote_manifest: dict[str, Any] | None = None
+    #: the memory keep entries in force when the snapshot was taken (see
+    #: Config.memory_keep). None on manifests from before this field existed.
+    memory_keep: dict[str, Any] | None = None
 
     @property
     def file_count(self) -> int:
@@ -181,6 +184,7 @@ def _parse_manifest(data: dict[str, Any]) -> Snapshot:
         targets={k: tuple(v) for k, v in data["targets"].items()},
         dir_roots=tuple(data["dir_roots"]),
         remote_manifest=data.get("remote_manifest"),
+        memory_keep=data.get("memory_keep"),
         files=tuple(FileRecord(**f) for f in data["files"]),
         # tolerate the older 2-element form so pre-existing snapshots still load
         dirs=tuple(
@@ -236,8 +240,19 @@ class SnapshotStore:
         targets: dict[str, tuple[Path, ...]],
         label: str,
         remote_manifest: dict[str, Any] | None = None,
+        memory_keep: dict[str, Any] | None = None,
     ) -> Snapshot:
-        """Record every file/dir/symlink under the target roots."""
+        """Record every file/dir/symlink under the target roots.
+
+        ``memory_keep`` is the record of which paths are agent memory
+        (``Config.memory_keep.as_record()``); it travels with the restore
+        point so memory stays protected on restore even after the preset
+        that named it is gone. Omitted, an EMPTY record is written -- "none
+        known" -- which is distinct from a pre-0.2 manifest that has no
+        record at all (``Snapshot.memory_keep is None``).
+        """
+        if memory_keep is None:
+            memory_keep = {"paths": [], "patterns": []}
         self._mkdir_private(self.blob_dir)
         self._mkdir_private(self.manifest_dir)
         if os.name != "nt":
@@ -299,6 +314,7 @@ class SnapshotStore:
             dirs=tuple(dirs),
             links=tuple(links),
             remote_manifest=remote_manifest,
+            memory_keep=memory_keep,
         )
         manifest = {
             "id": snap.id,
@@ -311,6 +327,7 @@ class SnapshotStore:
             "dirs": [vars(d) for d in snap.dirs],
             "links": [vars(ln) for ln in snap.links],
             "remote_manifest": snap.remote_manifest,
+            "memory_keep": snap.memory_keep,
         }
         path = self.manifest_dir / f"{snap_id}.json"
         path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")

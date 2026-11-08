@@ -340,3 +340,101 @@ def test_symlink_alias_does_not_shadow_the_real_memory_dir(home: dict[str, Any])
     assert r.returncode == 0, r.stderr + r.stdout
     assert not (real / "fact.md").exists(), "the alias shadowed the real memory dir"
     assert (alias_parent / "memory").is_symlink()  # the link itself is untouched
+
+
+@pytest.mark.e2e
+def test_symlinked_project_dir_does_not_shadow_the_real_memory_dir(home: dict[str, Any]) -> None:
+    """projects/-a -> projects/-z: the alias's `memory` is not itself a link,
+    so a link check on the last component alone lets it win dedup; the
+    redirect guard then skips it and -z/memory is never wiped while -y is.
+    The spelling with the fewest symlink components must win."""
+    if sys.platform == "win32":
+        pytest.skip("directory symlinks need a privilege on Windows runners")
+    claude = home["claude"]
+    z = claude / "projects" / "-z" / "memory"
+    y = claude / "projects" / "-y" / "memory"
+    z.mkdir(parents=True)
+    y.mkdir(parents=True)
+    (z / "fact.md").write_text("real\n")
+    (y / "other.md").write_text("other\n")
+    (claude / "projects" / "-a").symlink_to(Path("-z"), target_is_directory=True)
+
+    r = run_cli(home["env"], "wipe", "memory", "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert not (y / "other.md").exists()
+    assert not (z / "fact.md").exists(), "the linked project dir shadowed the real memory"
+    assert (claude / "projects" / "-a").is_symlink()
+
+
+def _mcp_call(server: Any, tool: str, args: dict[str, Any]) -> Any:
+    import asyncio
+
+    result = asyncio.run(server.call_tool(tool, args))
+    assert not result.is_error, result.content
+    out = result.structured_content
+    return out["result"] if isinstance(out, dict) and set(out) == {"result"} else out
+
+
+@pytest.mark.e2e
+def test_restore_keeps_memory_protected_after_the_preset_is_disabled(
+    home: dict[str, Any], monkeypatch: Any
+) -> None:
+    """The memory protection travels WITH the snapshot. Disabling the preset
+    between snapshot and restore must not turn a session restore (CLI or MCP)
+    into a memory rollback."""
+    pytest.importorskip("mcp", reason="mcp extra not installed")
+    from neurailyzer.mcp_server import build_server
+
+    env, proj, config = home["env"], home["proj"], home["config"]
+    fact = proj / "memory" / "fact.md"
+    r = run_cli(env, "wipe", "session", "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    snap_id = _SNAP_ID.findall(r.stdout)[0]
+    fact.write_text("learned after the snapshot\n")
+
+    # the preset is gone; only the snapshot dir remains in the config
+    text = config.read_text()
+    config.write_text(text.replace('enabled = ["claude-code", "codex"]', "enabled = []"))
+
+    _point_home(monkeypatch, home["home"])
+    out = _mcp_call(
+        build_server(str(config)), "nl_restore", {"to": snap_id, "commit": True, "force": True}
+    )
+    assert out["ok"] is True, out
+    assert fact.read_text() == "learned after the snapshot\n"
+    assert str(fact) in out["keep_list_skipped"]
+
+    r = run_cli(env, "restore", "--to", snap_id, "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert fact.read_text() == "learned after the snapshot\n"
+    assert (proj / "sess-1.jsonl").exists()  # the transcript did come back
+
+
+def test_mcp_restore_refuses_a_snapshot_with_no_memory_record_on_a_bare_config(
+    home: dict[str, Any], monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A pre-0.2 manifest records no memory paths. With a config that names
+    none either, MCP cannot establish memory protection -- so it refuses
+    instead of guessing. The CLI (a human) may still restore it."""
+    pytest.importorskip("mcp", reason="mcp extra not installed")
+    import json
+
+    from neurailyzer.mcp_server import build_server
+    from neurailyzer.snapshots import SnapshotStore
+
+    _point_home(monkeypatch, home["home"])
+    snapdir = tmp_path / "snaps"
+    store = SnapshotStore(snapdir)
+    snap = store.take({"session": (home["proj"],)}, "old-style")
+    manifest = snapdir / "manifests" / f"{snap.id}.json"
+    data = json.loads(manifest.read_text())
+    data.pop("memory_keep")  # a pre-0.2 manifest: no record at all
+    manifest.write_text(json.dumps(data))
+    bare = tmp_path / "bare.toml"
+    bare.write_text(f'[snapshots]\ndir = "{snapdir.as_posix()}"\n')
+
+    out = _mcp_call(
+        build_server(str(bare)), "nl_restore", {"to": snap.id, "commit": True, "force": True}
+    )
+    assert out["ok"] is False
+    assert "memory" in out["reason"] and "CLI" in out["reason"]
