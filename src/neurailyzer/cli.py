@@ -65,7 +65,7 @@ class Scope(StrEnum):
 _AFTER_HELP = (
     "Only state modified at/after this moment: ISO-8601 (2026-11-01, "
     "2026-11-01T04:00) or a span back from now (30m, 12h, 7d, 2w). "
-    "The neuralizer flash: forget everything since."
+    "The neuralizer flash: erase all state since then."
 )
 _BEFORE_HELP = "Only state modified before this moment (same forms). The retention cut."
 

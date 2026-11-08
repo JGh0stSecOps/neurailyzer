@@ -72,7 +72,7 @@ committed: the agent asking is the one whose record would vanish.
 
 **Time windows.** `--after T` and `--before T` narrow any file scope to the
 entries whose own mtime (`lstat`, never the link's destination) falls in the
-window. `--after` is the neuralizer flash (forget everything since T);
+window. `--after` is the neuralizer flash (erase all state since T);
 `--before` is the retention cut. The window is per file: a database file goes
 whole or stays whole, and the plan names each such file. It never applies to
 `remote`, and the pre-wipe snapshot covers the whole root regardless.

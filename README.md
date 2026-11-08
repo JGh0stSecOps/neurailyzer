@@ -5,7 +5,7 @@
   <img src="assets/wordmark-light.svg" alt="NeurAIlyzer" width="340">
 </picture>
 
-**State hygiene for AI agents — for any model, any stack.** Forget everything since a moment you choose — transcripts, scratch, *and* the agent's memory — and roll it all back if you change your mind.
+**State hygiene for AI agents — for any model, any stack.** Erase everything an agent accumulated after a moment you choose — transcripts, scratch, *and* its memory — and roll it all back if you change your mind.
 
 
 [Design](docs/DESIGN.md) · [Wipe taxonomy](docs/WIPE-TAXONOMY.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
