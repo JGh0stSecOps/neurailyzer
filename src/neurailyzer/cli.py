@@ -23,12 +23,15 @@ from .config import (
     DEFAULT_CONFIG_PATH,
     ENV_CONFIG,
     FILE_SCOPES,
+    MEMORY_SCOPE,
     REMOTE_SCOPE,
     ConfigError,
+    KeepList,
     load,
 )
 from .config import Config as Config  # noqa: PLC0414 — re-exported for library use
 from .snapshots import RestorePlan, SnapshotError, SnapshotStore
+from .timewindow import TimeWindow, TimeWindowError, parse_when
 from .wipers.base import WipePlan
 
 app = typer.Typer(
@@ -55,9 +58,32 @@ class Scope(StrEnum):
     session = "session"
     rag = "rag"
     sandbox = "sandbox"
+    memory = "memory"
     models = "models"
     remote = "remote"
     all = "all"
+
+
+_AFTER_HELP = (
+    "Only state modified at/after this moment: ISO-8601 (2026-11-01, "
+    "2026-11-01T04:00) or a span back from now (30m, 12h, 7d, 2w). "
+    "The neuralizer flash: erase all state since then."
+)
+_BEFORE_HELP = "Only state modified before this moment (same forms). The retention cut."
+
+
+def _window(after: str | None, before: str | None) -> TimeWindow | None:
+    """Read --after/--before into a TimeWindow; a bad moment is exit 2."""
+    if after is None and before is None:
+        return None
+    try:
+        return TimeWindow(
+            after=parse_when(after) if after is not None else None,
+            before=parse_when(before) if before is not None else None,
+        )
+    except TimeWindowError as exc:
+        err_console.print(f"[red]refusing[/red] time window: {escape(str(exc))}")
+        raise typer.Exit(code=2) from exc
 
 
 def _load_config() -> Config:
@@ -89,23 +115,49 @@ def main(
 
 @app.command("list-state")
 def list_state(
-    scope: list[Scope] = typer.Option(
-        [s for s in Scope if s is not Scope.all], "--scope", "-s", help="Scopes to inspect."
+    scope: list[Scope] | None = typer.Option(
+        None,
+        "--scope",
+        "-s",
+        help="Scopes to inspect (default: every scope; with --after/--before, the file scopes).",
     ),
+    after: str | None = typer.Option(None, "--after", help=_AFTER_HELP),
+    before: str | None = typer.Option(None, "--before", help=_BEFORE_HELP),
 ) -> None:
     """Show what state exists and what a wipe at these scopes *would* affect."""
     cfg = _load_config()
-    table = Table(title="neurailyzer list-state")
+    window = _window(after, before)
+    if scope is None:
+        # the default inventory covers every scope; a windowed one covers the
+        # file scopes, since a provider API has no per-item clock. Naming
+        # `remote` explicitly beside a window is still a refusal below.
+        scope = [
+            s
+            for s in Scope
+            if s is not Scope.all and not (window is not None and s is Scope.remote)
+        ]
+    if window is not None and Scope.remote in scope:
+        err_console.print(
+            "[red]refusing[/red] --after/--before with the remote scope: a provider "
+            "API has no per-item clock. Inspect remote without a window."
+        )
+        raise typer.Exit(code=2)
+    title = "neurailyzer list-state"
+    if window is not None:
+        title += f" ({window.describe()})"
+    table = Table(title=title)
     for col in ("scope", "status", "targets", "files", "bytes", "kept"):
         table.add_column(col)
     for s in scope:
         if s is Scope.all:
             continue
-        st = core.scope_status(cfg, s.value)
+        st = core.scope_status(cfg, s.value, window if s.value in FILE_SCOPES else None)
         if not st.available:
             status = "[dim]no adapter yet (planned)[/dim]"
         elif not st.configured:
             status = "[yellow]not configured[/yellow]"
+        elif not st.complete:
+            status = "[red]incomplete[/red] -- part unread; counts are a floor"
         else:
             status = "[green]ready[/green]"
         shown = st.configured and st.available and st.counted
@@ -231,7 +283,7 @@ def snapshot(
     if not targets:
         console.print("[yellow]nothing to snapshot[/yellow] -- no targets configured.")
         raise typer.Exit(code=1)
-    snap = store.take(targets, label)
+    snap = store.take(targets, label, memory_keep=cfg.memory_keep.as_record())
     store.prune(cfg.retention)
     console.print(
         f"[green]snapshot[/green] {snap.id} ({snap.file_count} file(s), {snap.total_bytes} bytes)"
@@ -253,11 +305,28 @@ def wipe(
     force: bool = typer.Option(
         False, "--force", help="Wipe even if a targeted harness looks like it is running."
     ),
+    after: str | None = typer.Option(None, "--after", help=_AFTER_HELP),
+    before: str | None = typer.Option(None, "--before", help=_BEFORE_HELP),
 ) -> None:
-    """Reset state at the given scope(s). Dry-run unless --commit."""
+    """Reset state at the given scope(s). Dry-run unless --commit.
+
+    Scopes: session (transcripts), sandbox (scratch/caches), memory (the
+    agent's durable memory -- kept by every other scope), remote, all.
+    --after/--before narrow a file scope to a time window.
+    """
     cfg = _load_config()
     scopes = core.expand_scopes([s.value for s in scope])
     label = ", ".join(s.value for s in scope)
+    window = _window(after, before)
+    if window is not None and REMOTE_SCOPE in scopes:
+        err_console.print(
+            "[red]refusing[/red] --after/--before with the remote scope: a provider "
+            "API has no per-item clock, so a window would mean deleting MORE than "
+            "asked on the one scope that cannot be restored. Wipe remote separately."
+        )
+        raise typer.Exit(code=2)
+    if window is not None:
+        console.print(f"[cyan]time window:[/cyan] {escape(window.describe())}")
 
     for preset_id, written, actual in cfg.escaped_targets:
         console.print(
@@ -265,13 +334,20 @@ def wipe(
             f"{preset_id} directory (at [bold]{escape(actual)}[/bold]), so it "
             "is not that harness's state -- left alone"
         )
+    for preset_id, written, actual in cfg.redirected_memory:
+        console.print(
+            f"[yellow]skipped:[/yellow] memory dir {escape(written)} is a symlink "
+            f"(lands on [bold]{escape(actual)}[/bold]); a redirected memory target "
+            f"could turn `wipe memory` into a wipe of whatever it points at -- "
+            f"left alone ({preset_id})"
+        )
     for written, actual in cfg.symlinked_targets:
         console.print(
             f"[yellow]note:[/yellow] {escape(written)} is a symlink -- the wipe lands "
             f"on [bold]{escape(actual)}[/bold]"
         )
     if not commit:
-        plans = core.plan_wipe(cfg, scopes)
+        plans = core.plan_wipe(cfg, scopes, window)
         console.print(f"[yellow]DRY-RUN[/yellow] would wipe: [bold]{label}[/bold]")
         _print_plans(plans, scopes)
         _print_caveats(cfg)
@@ -290,7 +366,11 @@ def wipe(
         raise typer.Exit(code=3)
 
     report = core.execute_wipe(
-        cfg, scopes, take_snapshot=not no_snapshot, label=f"pre-wipe-{label.replace(', ', '-')}"
+        cfg,
+        scopes,
+        take_snapshot=not no_snapshot,
+        label=f"pre-wipe-{label.replace(', ', '-')}",
+        window=window,
     )
     if not report.plans:
         console.print("[yellow]nothing to wipe[/yellow] -- no configured targets in scope.")
@@ -336,7 +416,7 @@ def _liveness_ok(
         preset = presets_mod.REGISTRY.get(pid)
         if preset is None:
             continue
-        owned = presets_mod.expand_existing((*preset.session, *preset.sandbox))
+        owned = presets_mod.expand_existing((*preset.session, *preset.sandbox, *preset.memory))
         by_preset[pid] = tuple(r for r in owned if r in roots) or (owned if not roots else ())
     live = liveness.check_enabled(list(cfg.presets), roots, by_preset)
     if not live:
@@ -445,11 +525,23 @@ def restore(
         pre = store.take(
             {s: tuple(Path(p) for p in roots) for s, roots in snap.targets.items()},
             label="pre-restore",
+            memory_keep=cfg.memory_keep.as_record(),
         )
         console.print(f"[dim]snapshot {pre.id} taken before restoring[/dim]")
-        plan = store.restore(snap, cfg.keep)
-    else:
-        plan = store.plan_restore(snap, cfg.keep)
+    # A restore may touch memory ONLY if the snapshot was taken with the memory
+    # scope in play (`wipe memory`, `wipe all`, a manual `snapshot`). A
+    # `wipe session` restore point also holds memory bytes (the snapshot covers
+    # the whole root), but rolling memory back from it would undo memory the
+    # agent wrote since -- state the user never asked to touch.
+    # The memory protection recorded WITH the snapshot is honoured too: a
+    # preset disabled since then must not turn a session restore into a
+    # memory rollback.
+    keep = (
+        cfg.keep_for(MEMORY_SCOPE)
+        if MEMORY_SCOPE in snap.scopes
+        else cfg.keep.merged(KeepList.from_record(snap.memory_keep))
+    )
+    plan = store.restore(snap, keep) if commit else store.plan_restore(snap, keep)
     _print_restore(plan)
     if plan.errors:
         raise typer.Exit(code=1)

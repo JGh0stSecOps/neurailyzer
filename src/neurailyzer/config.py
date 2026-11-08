@@ -28,7 +28,10 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 #: scopes that have a working adapter in this release (file-tree state).
-FILE_SCOPES: tuple[str, ...] = ("session", "sandbox")
+#: ``memory`` is the harness's durable agent-written memory: every OTHER
+#: scope keeps it, so only an explicit ``memory`` (or ``all``) forgets it.
+FILE_SCOPES: tuple[str, ...] = ("session", "sandbox", "memory")
+MEMORY_SCOPE = "memory"
 #: provider-side stored state, configured via [remote.<provider>].
 REMOTE_SCOPE = "remote"
 #: scopes reserved by the design but without a shipped adapter yet.
@@ -195,6 +198,35 @@ class KeepList:
     def _keys(self) -> set[str]:
         return {k for p in self.paths for k in _spellings(p)}
 
+    def merged(self, other: KeepList | None) -> KeepList:
+        """This list plus *other*'s entries (duplicates harmless)."""
+        if other is None:
+            return self
+        return KeepList(
+            paths=(*self.paths, *other.paths),
+            patterns=(*self.patterns, *other.patterns),
+            collections=(*self.collections, *other.collections),
+            memory_keys=(*self.memory_keys, *other.memory_keys),
+        )
+
+    def as_record(self) -> dict[str, list[str]]:
+        """A JSON-safe record of the path/pattern entries (for a manifest)."""
+        return {"paths": [str(p) for p in self.paths], "patterns": list(self.patterns)}
+
+    @classmethod
+    def from_record(cls, data: object) -> KeepList | None:
+        """Rebuild from ``as_record`` output; None when absent or malformed."""
+        if not isinstance(data, Mapping):
+            return None
+        paths = data.get("paths", [])
+        patterns = data.get("patterns", [])
+        if not (isinstance(paths, list) and isinstance(patterns, list)):
+            return None
+        return cls(
+            paths=tuple(Path(str(p)) for p in paths),
+            patterns=tuple(str(p) for p in patterns),
+        )
+
     def protects(self, path: Path) -> bool:
         """True if *path* is a keep entry, lives under one, or matches a pattern."""
         keys = self._keys()
@@ -220,8 +252,22 @@ class KeepList:
 class Config:
     """NeurAIlyzer configuration (see README Configuration)."""
 
+    #: the FULL keep-list: credentials, settings, the snapshot store AND every
+    #: memory target. Anything that reads ``keep`` without asking for a scope
+    #: gets the safe answer -- memory is protected.
     keep: KeepList = field(default_factory=KeepList)
-    #: scope -> absolute target roots. Only FILE_SCOPES appear here in v0.1.
+    #: the keep-list WITHOUT the memory targets -- credentials, settings, the
+    #: install, the snapshot store. Honoured by the ``memory`` scope's wiper
+    #: and by RESTORE (a restore must be able to bring memory back after a
+    #: memory wipe; the full ``keep`` would skip it). Never used by any other
+    #: wiper.
+    hard_keep: KeepList | None = None
+    #: the memory entries alone (preset `memory` templates + [targets.memory]).
+    #: Recorded into every snapshot so a restore can keep protecting memory
+    #: even after the preset is disabled -- the protection travels with the
+    #: restore point, not with whatever the config says today.
+    memory_keep: KeepList = field(default_factory=KeepList)
+    #: scope -> absolute target roots (FILE_SCOPES only).
     targets: Mapping[str, tuple[Path, ...]] = field(default_factory=dict)
     #: provider id -> enabled remote surfaces (see wipers/remote.py).
     remote: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -237,6 +283,10 @@ class Config:
     #: their own harness root. These are SKIPPED: a link out of the harness
     #: dir points at something that is not that harness's scratch.
     escaped_targets: tuple[tuple[str, str, str], ...] = ()
+    #: (preset, path, destination) for MEMORY targets that are, or sit under,
+    #: a symlink below the harness root. SKIPPED: a redirected memory dir
+    #: would let `wipe memory` land on whatever the link points at.
+    redirected_memory: tuple[tuple[str, str, str], ...] = ()
     snapshot_dir: Path = field(default_factory=lambda: DEFAULT_SNAPSHOT_DIR.expanduser().resolve())
     retention: int = DEFAULT_RETENTION
     #: where this config was loaded from (None = defaults, no file found).
@@ -244,6 +294,59 @@ class Config:
 
     def roots_for(self, scope: str) -> tuple[Path, ...]:
         return tuple(self.targets.get(scope, ()))
+
+    def keep_for(self, scope: str) -> KeepList:
+        """The keep-list a wiper for *scope* must honour.
+
+        Only the ``memory`` scope may touch memory; every other scope sees the
+        full list. Fails closed: an unknown scope gets the full list too.
+        """
+        if scope != MEMORY_SCOPE:
+            return self.keep
+        # A Config built by hand (library use) that supplied `keep` but no
+        # `hard_keep` must not hand the memory wiper an EMPTY keep-list: the
+        # caller's protections hold for every scope until they say otherwise.
+        return self.hard_keep if self.hard_keep is not None else self.keep
+
+
+def _resolves_to(candidate: Path, target: Path) -> bool:
+    """True if *candidate* is *target*: by spelling, by resolved identity, or
+    by the filesystem's own word (``samefile``) -- so a case or Unicode
+    variant of an ancestor on a case-insensitive volume is still that
+    ancestor. Comparisons go through ``_same`` (case-folded where the
+    filesystem folds, NFC-normalised), never raw string equality.
+    """
+    if _same(candidate, target):
+        return True
+    try:
+        if _same(candidate.resolve(), target):
+            return True
+        return os.path.samefile(candidate, target)
+    except OSError:
+        return False
+
+
+def _redirected_below_root(path: Path, roots_literal: set[Path], roots_resolved: set[Path]) -> bool:
+    """True if *path* or any ancestor BELOW its harness root is a symlink.
+
+    Walks up from the path. Reaching a harness root (by literal spelling or
+    by resolved identity) ends the walk: the root itself may be a link (stow,
+    chezmoi). A link anywhere beneath it redirects the target and is refused.
+    """
+    for cand in (path, *path.parents):
+        if cand in roots_literal:
+            return False
+        # is_symlink BEFORE the resolved check: a link that points AT the
+        # harness root would otherwise read as "reached the root" and pass --
+        # the exact redirect this guard exists to catch.
+        if cand.is_symlink():
+            return True
+        try:
+            if cand.resolve() in roots_resolved:
+                return False
+        except OSError:
+            return True  # cannot tell where it lands: refuse
+    return False
 
 
 def _parse_paths(section: str, value: object) -> tuple[Path, ...]:
@@ -308,12 +411,20 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
     enabled = presets_raw.get("enabled", [])
     if not isinstance(enabled, list) or not all(isinstance(e, str) for e in enabled):
         raise ConfigError("[presets] enabled must be a list of strings")
-    preset_targets: dict[str, list[Path]] = {"session": [], "sandbox": []}
+    preset_targets: dict[str, list[Path]] = {s: [] for s in FILE_SCOPES}
     preset_keep_paths: list[Path] = []
     preset_keep_patterns: list[str] = []
+    # memory templates double as keep entries for every scope but `memory`
+    # (as patterns + literals, not only existing matches: memory written AFTER
+    # enablement must be protected by a `session` wipe too)
+    memory_keep_paths: list[Path] = []
+    memory_keep_patterns: list[str] = []
     #: (preset, template path, where it actually resolves) for preset targets
     #: that point outside their own harness root -- skipped, never wiped.
     escaped_targets: list[tuple[str, str, str]] = []
+    #: (preset, memory path, where it actually resolves) for memory targets
+    #: that are symlinks below the harness root -- skipped, never wiped.
+    redirected_memory: list[tuple[str, str, str]] = []
     preset_caveats: list[str] = []
     if enabled:
         from . import presets as presets_mod
@@ -339,15 +450,36 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
             # being checked would authorize itself.
             own |= {
                 r.resolve()
-                for r in presets_mod.expand_existing((*preset.session, *preset.sandbox))
+                for r in presets_mod.expand_existing(
+                    (*preset.session, *preset.sandbox, *preset.memory)
+                )
                 if not r.is_symlink()
             }
+            # expand_existing keeps, for each real path, the spelling with the
+            # fewest symlink components -- so with `~/.claude -> $CLAUDE_CONFIG_DIR`
+            # (stow) both the root and the memory paths come back in the real
+            # spelling and the redirect walk below stops at the root instead of
+            # reading the root's own link as a redirect beneath it.
+            detect_literals = set(presets_mod.expand_existing(preset.detect))
+            detect_resolved = {r.resolve() for r in detect_literals}
             for scope_name, templates in (
                 ("session", preset.session),
                 ("sandbox", preset.sandbox),
+                (MEMORY_SCOPE, preset.memory),
             ):
                 for path in presets_mod.expand_existing(templates):
                     resolved = path.resolve()
+                    if scope_name == MEMORY_SCOPE and _redirected_below_root(
+                        path, detect_literals, detect_resolved
+                    ):
+                        # A memory dir that is itself a symlink (or sits under
+                        # one) lands SOMEWHERE ELSE -- and "somewhere else
+                        # inside the harness" is exactly the attack: point
+                        # projects/p/memory at ~/.claude and `wipe memory`
+                        # becomes `wipe everything`. The harness ROOT may be a
+                        # link (stow); nothing below it may be.
+                        redirected_memory.append((pid, str(path), str(resolved)))
+                        continue
                     if any(resolved == root or root in resolved.parents for root in own):
                         preset_targets[scope_name].append(path)
                         continue
@@ -360,6 +492,9 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
             kp, kpat = _split_keep(f"presets.{pid}", list(preset.keep))
             preset_keep_paths.extend(kp)
             preset_keep_patterns.extend(kpat)
+            mk, mkpat = _split_keep(f"presets.{pid}.memory", list(preset.memory))
+            memory_keep_paths.extend(mk)
+            memory_keep_patterns.extend(mkpat)
 
     # -- remote providers -----------------------------------------------------
     remote_raw = data.get("remote", {})
@@ -415,6 +550,14 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                 f"[targets.{scope}] has no adapter in this release -- "
                 f"supported scopes today: {', '.join(FILE_SCOPES)}"
             )
+        if scope == MEMORY_SCOPE and isinstance(body, Mapping):
+            # a hand-listed memory tree is memory for every scope: keep it
+            # from session/sandbox exactly like a preset's memory
+            raw_mem = body.get("paths", [])
+            if isinstance(raw_mem, list) and all(isinstance(v, str) for v in raw_mem):
+                mk, mkpat = _split_keep("targets.memory", raw_mem)
+                memory_keep_paths.extend(mk)
+                memory_keep_patterns.extend(mkpat)
         if scope not in FILE_SCOPES:
             raise ConfigError(
                 f"[targets.{scope}] is not a known scope "
@@ -426,8 +569,26 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         paths = _parse_paths(f"targets.{scope}", raw_paths)
         if isinstance(raw_paths, list):
             for written, resolved in zip(raw_paths, paths, strict=False):
-                as_written = Path(os.path.expandvars(str(written))).expanduser()
+                # lexical absolute form: no symlink resolution, but `..` folded
+                # and a relative path anchored, so `.parents` below is real.
+                # A relative spelling must not slip past an ancestor check that
+                # compares against an absolute resolved path.
+                as_written = Path(
+                    os.path.abspath(Path(os.path.expandvars(str(written))).expanduser())
+                )
                 if as_written != resolved:
+                    # `.../projects/p/memory -> .../.claude`: the wipe root
+                    # would become the parent tree, credentials included. A
+                    # link to an ancestor is never a dotfiles layout; refuse.
+                    # Compare against each ancestor's RESOLVED identity, not
+                    # its spelling: with a stow root `~/.claude -> real` and
+                    # `memory -> real`, no lexical parent equals `real`.
+                    if any(_resolves_to(anc, resolved) for anc in as_written.parents):
+                        raise ConfigError(
+                            f"[targets.{scope}] refusing target {as_written}: it is a "
+                            f"symlink to its own ancestor {resolved} -- following it "
+                            "would wipe the parent tree, not the target"
+                        )
                     symlinked_targets.append((str(as_written), str(resolved)))
         for p in paths:
             reason = _forbidden_target_reason(p)
@@ -464,16 +625,22 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         targets[scope] = tuple(merged)
 
     # The snapshot store protects itself: it is always on the keep-list.
-    keep = KeepList(
+    hard_keep = KeepList(
         paths=(*keep_paths, *preset_keep_paths, snapshot_dir),
         patterns=(*keep_patterns, *preset_keep_patterns),
     )
+    # ... and every other scope additionally keeps the memory targets.
+    memory_keep = KeepList(paths=tuple(memory_keep_paths), patterns=tuple(memory_keep_patterns))
+    keep = hard_keep.merged(memory_keep)
     return Config(
         keep=keep,
+        hard_keep=hard_keep,
+        memory_keep=memory_keep,
         targets=targets,
         remote=remote,
         symlinked_targets=tuple(symlinked_targets),
         escaped_targets=tuple(escaped_targets),
+        redirected_memory=tuple(redirected_memory),
         caveats=tuple(dict.fromkeys(preset_caveats)),
         presets=tuple(enabled),
         snapshot_dir=snapshot_dir,
@@ -494,7 +661,8 @@ def load(path: str | Path | None = None) -> Config:
     if not cfg_path.exists():
         if explicit:
             raise ConfigError(f"config file not found: {cfg_path}")
-        return Config(keep=KeepList(paths=(DEFAULT_SNAPSHOT_DIR.expanduser().resolve(),)))
+        store_only = KeepList(paths=(DEFAULT_SNAPSHOT_DIR.expanduser().resolve(),))
+        return Config(keep=store_only, hard_keep=store_only)
     try:
         with cfg_path.open("rb") as fh:
             data = tomllib.load(fh)

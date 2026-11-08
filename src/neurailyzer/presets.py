@@ -5,8 +5,10 @@ A preset packages, for one known harness (Claude Code, OpenCode, ...):
 - ``detect``  -- paths whose existence means the harness is installed here
 - ``session`` -- conversation/thread history trees (wipeable)
 - ``sandbox`` -- scratch/cache/temp trees (wipeable)
+- ``memory``  -- the harness's durable, agent-written memory (wipeable ONLY by
+  the ``memory`` scope; for every other scope it is on the keep-list)
 - ``keep``    -- state that must NEVER be wiped (credentials, settings,
-  plugins, durable memory), merged into the keep-list automatically
+  plugins, the installation), merged into the keep-list automatically
 
 Users enable presets in config rather than hand-listing paths::
 
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import glob as globmod
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -50,6 +53,12 @@ class Preset:
     session: tuple[str, ...] = ()
     #: scratch, caches, temp, downloads -- `--scope sandbox`
     sandbox: tuple[str, ...] = ()
+    #: durable agent-written memory -- `--scope memory`. A session or sandbox
+    #: wipe treats every entry here as KEPT; only the memory scope (and `all`)
+    #: takes it. The one lever that makes the tool a neuralizer rather than a
+    #: cache cleaner, and the reason it is its own scope: a user who asks for
+    #: `session` must never lose it by surprise.
+    memory: tuple[str, ...] = ()
     #: never wiped; merged into the keep-list whenever this preset is enabled
     keep: tuple[str, ...] = ()
     notes: str = ""
@@ -63,28 +72,66 @@ def _expand(template: str) -> Path:
     return Path(os.path.expandvars(template)).expanduser()
 
 
+_ENV_REF = re.compile(r"\$(\w+|\{[^}]*\})")
+
+
+def _expand_pattern(template: str) -> str:
+    """Expand ``~`` and ``$VARS`` for use as a GLOB, escaping what they expand to.
+
+    Only the template's own ``*?[`` are pattern syntax. A home directory or
+    env value containing ``[`` (``/Users/home[1]``) is a literal path, and
+    interpolating it unescaped would let the glob select a sibling tree
+    (``/Users/home1``) -- another user's memory, wiped as this user's.
+    An unset variable stays as written, exactly as ``os.path.expandvars``
+    leaves it, so the path does not exist and contributes nothing.
+    """
+
+    def _env(m: re.Match[str]) -> str:
+        name = m.group(1).strip("{}")
+        return globmod.escape(os.environ[name]) if name in os.environ else m.group(0)
+
+    if template == "~" or template.startswith(("~/", "~\\")):
+        template = globmod.escape(os.path.expanduser("~")) + template[1:]
+    return _ENV_REF.sub(_env, template)
+
+
 def expand_existing(templates: tuple[str, ...]) -> tuple[Path, ...]:
     """Expand templates (globs allowed) and keep only paths that exist now.
 
     Globs matter because harnesses version their filenames (Codex's
     ``state_5.sqlite``) or nest per-profile/per-project trees — hardcoding
     those would silently rot.
+
+    Two spellings of one real path are deduplicated, and the spelling with the
+    FEWEST symlink components wins: a link alias (``projects/a/memory ->
+    ../z/memory``, or a linked project dir ``projects/a -> projects/z``) must
+    never shadow the real ``projects/z/memory``, or the redirect guard skips
+    the alias and the real memory is silently never wiped. A stow-managed
+    root is a link both spellings share, so it never decides.
     """
-    out: list[Path] = []
-    seen: set[Path] = set()
+    candidates: list[Path] = []
     for t in templates:
-        p = _expand(t)
-        candidates = (
-            [Path(m) for m in sorted(globmod.glob(str(p), recursive=True))]
-            if any(c in t for c in "*?[")
-            else [p]
-        )
-        for c in candidates:
-            r = c.resolve()
-            if c.exists() and r not in seen:
-                seen.add(r)
-                out.append(c)
-    return tuple(out)
+        if any(c in t for c in "*?["):
+            candidates.extend(
+                Path(m) for m in sorted(globmod.glob(_expand_pattern(t), recursive=True))
+            )
+        else:
+            candidates.append(_expand(t))
+    out: dict[Path, tuple[int, Path]] = {}  # resolved -> (link components, spelling)
+    for c in candidates:
+        if not c.exists():
+            continue
+        r = c.resolve()
+        depth = _link_components(c)
+        prior = out.get(r)
+        if prior is None or depth < prior[0]:
+            out[r] = (depth, c)
+    return tuple(spelling for _depth, spelling in out.values())
+
+
+def _link_components(path: Path) -> int:
+    """How many of *path*'s components (itself included) are symlinks."""
+    return sum(1 for p in (path, *path.parents) if p.is_symlink())
 
 
 def expand_all(templates: tuple[str, ...]) -> tuple[Path, ...]:
@@ -133,10 +180,14 @@ CLAUDE_CODE = Preset(
         "$CLAUDE_CONFIG_DIR/downloads",
         "~/.claude/downloads",
     ),
-    keep=(
+    memory=(
         # auto-memory lives INSIDE the projects tree -- the one trap that
-        # makes a naive `rm -rf ~/.claude/projects` destructive
+        # makes a naive `rm -rf ~/.claude/projects` destructive. A `session`
+        # wipe keeps it; `wipe memory` (or `all`) is how you forget it.
         "~/.claude/projects/*/memory",
+        "$CLAUDE_CONFIG_DIR/projects/*/memory",
+    ),
+    keep=(
         "~/.claude/CLAUDE.md",
         "~/.claude/settings.json",
         "~/.claude/settings.local.json",
@@ -152,7 +203,6 @@ CLAUDE_CODE = Preset(
         "~/.claude/scheduled_tasks.lock",
         "~/.claude/.credentials.json",
         "~/.claude.json",  # account/org identity + project trust (outside the tree)
-        "$CLAUDE_CONFIG_DIR/projects/*/memory",
         "$CLAUDE_CONFIG_DIR/CLAUDE.md",
         "$CLAUDE_CONFIG_DIR/settings.json",
         "$CLAUDE_CONFIG_DIR/settings.local.json",
@@ -168,8 +218,9 @@ CLAUDE_CODE = Preset(
     ),
     notes="Layout verified against a live 2026-07 install (macOS) and the "
     "upstream claude-directory doc. projects/<slug>/*.jsonl are transcripts; "
-    "projects/<slug>/memory/ is durable auto-memory and must survive every "
-    "wipe. Storage is append-only JSONL -- no SQLite, so no WAL hazard; "
+    "projects/<slug>/memory/ is durable auto-memory: a `session` wipe keeps "
+    "it, only `wipe memory` (or `all`) takes it. Storage is append-only JSONL "
+    "-- no SQLite, so no WAL hazard; "
     "liveness comes from sessions/<pid>.json. file-history/ backs "
     "checkpoint-rewind for PAST sessions, so it sits in `sandbox`: wiped "
     "only when you ask for that scope, and restorable from the snapshot.",
@@ -245,7 +296,6 @@ GROK_BUILD = Preset(
         "~/.grok/leader.sock",
         "~/.grok/leader*.lock",
         # user-curated knowledge, same stance as every other preset
-        "~/.grok/memory",
         "~/.grok/skills",
         "$GROK_HOME/auth.json",
         "$GROK_HOME/auth.json.lock",
@@ -257,8 +307,11 @@ GROK_BUILD = Preset(
         "$GROK_HOME/config.toml",
         "$GROK_HOME/leader.sock",
         "$GROK_HOME/leader*.lock",
-        "$GROK_HOME/memory",
         "$GROK_HOME/skills",
+    ),
+    memory=(
+        "~/.grok/memory",
+        "$GROK_HOME/memory",
     ),
     notes="Layout source-verified against xai-org/grok-build @ 2a28b4a "
     "(paths.rs grok_home/sessions_cwd_dir, auth/storage.rs, "
@@ -300,12 +353,16 @@ CODEX = Preset(
         "~/.codex/requirements.toml",
         "~/.codex/hooks.json",
         "~/.codex/*.config.toml",  # named profiles
-        "~/.codex/memories_*.sqlite*",  # agent memory: durable, not scratch
         "$CODEX_HOME/auth.json",
         "$CODEX_HOME/config.toml",
         "$CODEX_HOME/requirements.toml",
         "$CODEX_HOME/hooks.json",
         "$CODEX_HOME/*.config.toml",
+    ),
+    memory=(
+        # agent memory: durable, not scratch -- kept by session/sandbox wipes,
+        # taken by `wipe memory`. WAL sidecars travel with the db.
+        "~/.codex/memories_*.sqlite*",
         "$CODEX_HOME/memories_*.sqlite*",
     ),
     notes="Layout source-verified against openai/codex (rust, 2026-07). SQLite "
@@ -370,10 +427,8 @@ HERMES = Preset(
         "~/.hermes/hermes-agent",  # the agent's own git checkout
         "~/.hermes/venvs",
         "~/.hermes/bin",
-        # --- memory + learned skills: the product's headline features, and
-        # user work product. Wipe only by explicit [targets] opt-in.
-        "~/.hermes/memories",
-        "~/.hermes/memory_store.db*",
+        # --- learned skills + response cache: user work product. Memory
+        # itself is the `memory` scope below.
         "~/.hermes/response_store.db*",
         "~/.hermes/skills",
         "~/.hermes/optional-skills",
@@ -390,7 +445,6 @@ HERMES = Preset(
         "~/.hermes/profiles/*/.env",
         "~/.hermes/profiles/*/auth.json",
         "~/.hermes/profiles/*/config.yaml",
-        "~/.hermes/profiles/*/memories",
         "~/.hermes/profiles/*/skills",
         "~/.hermes/profiles/*/pairing",
         "~/.hermes/profiles/*/state-snapshots",
@@ -400,23 +454,31 @@ HERMES = Preset(
         "$HERMES_HOME/pairing",
         "$HERMES_HOME/gateway_state.json",
         "$HERMES_HOME/config.yaml",
-        "$HERMES_HOME/memories",
-        "$HERMES_HOME/memory_store.db*",
         "$HERMES_HOME/skills",
         "$HERMES_HOME/state-snapshots",
         "$LOCALAPPDATA/hermes/.env",
         "$LOCALAPPDATA/hermes/auth.json",
         "$LOCALAPPDATA/hermes/pairing",
         "$LOCALAPPDATA/hermes/config.yaml",
-        "$LOCALAPPDATA/hermes/memories",
         "$LOCALAPPDATA/hermes/skills",
         "$LOCALAPPDATA/hermes/state-snapshots",
+    ),
+    memory=(
+        # the product's headline feature -- kept by every scope but `memory`
+        "~/.hermes/memories",
+        "~/.hermes/memory_store.db*",
+        "~/.hermes/profiles/*/memories",
+        "$HERMES_HOME/memories",
+        "$HERMES_HOME/memory_store.db*",
+        "$LOCALAPPDATA/hermes/memories",
+        "$LOCALAPPDATA/hermes/memory_store.db*",
     ),
     notes="Layout source-verified against NousResearch/hermes-agent v0.19.1 "
     "(2026-07-30). HERMES_HOME mixes state with credentials AND the install "
     "itself, so this preset targets named subtrees only -- never the root. "
-    "Memory stores, learned skills, and chat-platform pairing (an "
-    "authorization allowlist) are protected by default. state.db is WAL "
+    "Learned skills and chat-platform pairing (an authorization allowlist) "
+    "are protected; memory stores are the `memory` scope, kept by every "
+    "other scope. state.db is WAL "
     "SQLite: stop Hermes before wiping. Register NeurAIlyzer inside Hermes "
     "under mcp_servers: in ~/.hermes/config.yaml.",
 )

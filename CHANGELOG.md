@@ -6,6 +6,67 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — the neuralizer actually forgets
+- **`memory` scope.** A preset's durable agent-written memory (Claude Code
+  `projects/*/memory`, Codex `memories_*.sqlite*`, Hermes `memories/` and
+  `memory_store.db*`, Grok `memory/`) is now its own scope instead of a
+  permanent keep-list entry. Every *other* scope still keeps it
+  (`Config.keep_for`), so `wipe session` behaves exactly as before; `wipe
+  memory` and `wipe all --confirm all` take it. A memory dir that is (or sits
+  under) a symlink below the harness root is skipped and reported, so a
+  redirected `projects/p/memory` cannot widen the wipe. Restore uses the
+  keep-list *without* the memory entries (`Config.hard_keep`) only for a
+  snapshot taken with the memory scope in play, so a memory wipe restores
+  byte-for-byte while a `wipe session` restore point never rolls memory back.
+  Over MCP, memory moves in neither direction: `nl_wipe` will not commit it
+  and `nl_restore` keeps the full keep-list.
+- **Time windows.** `wipe` and `list-state` take `--after <when>` and
+  `--before <when>` (ISO-8601, or `30m`/`12h`/`7d`/`2w` back from now).
+  `--after` forgets everything since a moment; `--before` is a retention cut.
+  Judged per file by `lstat` mtime; out-of-window entries are skipped and
+  counted; an entry that cannot be dated is an error, not a skip; directories
+  are pruned only when the wipe emptied them; database files are named in the
+  plan because they go whole or stay whole. Refused on `remote` by both `wipe`
+  and `list-state`. The MCP `nl_wipe` tool takes `after`/`before`.
+- `neurailyzer.timewindow` module (`TimeWindow`, `parse_when`).
+- `scripts/plants.py`: runnable receipts for every safety guard in this
+  change -- each plant disables one guard in a copy of the tree and expects
+  its test to go RED; `tests/test_plants_table.py` fails if an anchor drifts.
+- MCP `nl_list_state` reports `complete` and a `status` per scope, so an agent
+  can tell a floor from a count.
+
+### Fixed
+- Preset templates expand `~` and `$VARS` as **literals** before globbing: a
+  home directory such as `/Users/home[1]` no longer turns `[1]` into pattern
+  syntax that selects the sibling `/Users/home1` (every scope, since 0.1.0).
+- When two spellings resolve to one path, the spelling with the fewest
+  symlink components wins deduplication, so a link alias (a linked memory
+  dir, a linked project dir, or a stow-managed root beside its real path)
+  cannot shadow the real memory dir and leave it silently un-wiped.
+- Every snapshot records which paths were agent memory when it was taken;
+  restore honours that record, so disabling a preset between snapshot and
+  restore cannot turn a session restore into a memory rollback. A snapshot
+  with no such record (pre-0.2, or a library caller that passed none) is
+  unknown, not "none": over MCP it is refused rather than guessed, whatever
+  is configured today (the CLI may still restore it).
+
+- A `[targets.<scope>]` path that is a symlink to its own ancestor (the
+  harness root, say) is refused at config load for every scope: following it
+  would make the wipe root the whole parent tree, credentials included.
+
+### Changed
+- `wipe all` now includes `memory`. Before, the README promised to reset an
+  agent's "memory" while the `claude-code` preset protected it under every
+  scope — the docs lied. `all` is the one command that forgets everything,
+  and it still snapshots first.
+- `list-state` lists the `memory` scope, counts only keep-list skips in its
+  `kept` column, and renders a scope whose survey was partial as
+  `incomplete` instead of `ready` (`ScopeStatus.complete`).
+- A hand-built `Config` (library use) with `keep` but no `hard_keep` gives the
+  memory wiper the caller's keep-list, never an empty one.
+- MCP `nl_wipe` treats an explicitly supplied empty `after`/`before` as a bad
+  bound (refused), not as "no window".
+
 ## [0.1.0] - 2026-08-06
 
 First tagged alpha. `main` now matches the hardened `dev` line — earlier `main`

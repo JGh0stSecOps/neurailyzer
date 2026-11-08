@@ -14,6 +14,7 @@ def test_expand_scopes_all_and_dedupe() -> None:
     assert set(core.expand_scopes(["all"])) == {
         "session",
         "sandbox",
+        "memory",
         "rag",
         "models",
         "remote",

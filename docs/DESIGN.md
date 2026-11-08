@@ -19,7 +19,7 @@ None of this is the model's *weights* (those are frozen). But all of it conditio
 **Wipe → restore, with a keep-list.**
 
 1. **Wipe** the accumulated state, at a chosen scope, locally and remotely.
-2. **Keep-list** protects what you explicitly mark (your durable long-term memory, pinned files) — those are never wiped.
+2. **Keep-list** protects what you explicitly mark (credentials, settings, pinned files) — those are never wiped. A harness's own durable memory is the `memory` scope (§4): kept by every other scope, wiped only when you name it.
 3. **Restore** to a **point in time** when needed — because every wipe takes a snapshot first.
 
 The mental model is the sci-fi neuralyzer, with one upgrade the name earns: **you set the target time.** It's not only "wipe it all," it's "be who you were at 04:00, before that bad tool loop poisoned your context."
@@ -55,11 +55,45 @@ Wipes are addressed by scope, least-blast-radius first:
 | `session` | current conversation/thread + its runtime context | between tasks |
 | `rag` | RAG vectors / embedded memory (a collection or a filter) | stale/biased retrieval |
 | `sandbox` | tool sandbox, temp, downloads | after experimenting |
+| `memory` | the harness's durable, agent-written memory (auto-memory dirs, memory DBs) | forget what it learned |
 | `models` | unload resident models, flush KV, drop warm cache | force a cold, clean reload |
 | `remote` | provider-side stored state (files, vector stores, batches), per-provider opt-in | cloud hygiene |
 | `all` | everything above | factory reset |
 
 Scopes compose: `neurailyzer wipe session sandbox`.
+
+**Memory is kept by every scope but its own.** A preset's `memory` templates
+are wipe targets for the `memory` scope and keep-list entries for every other
+scope (`Config.keep_for`). `wipe session` therefore never takes memory by
+surprise; `wipe memory` and `wipe all` do. A memory target that is, or sits
+under, a symlink below the harness root is skipped and reported
+(`Config.redirected_memory`): `projects/p/memory -> ~/.claude` must not turn
+`wipe memory` into a wipe of the harness. Restore honours the keep-list
+*without* the memory entries (`Config.hard_keep`) **only when the snapshot
+was taken with the memory scope in play** (`wipe memory`, `wipe all`, a
+manual `snapshot`); a `wipe session` restore point also holds memory bytes,
+but restoring it never rolls memory back. Over MCP, memory moves in neither
+direction: `nl_wipe` refuses to commit it and `nl_restore` always uses the
+full keep-list. The agent asking is the one whose record would change.
+
+**Explicit targets are taken as written.** A `[targets.<scope>]` path is the
+user's instruction: if it is a symlink the wipe lands on its destination and
+the plan says so (`symlinked_targets`). One shape is refused at config load
+for every scope: a target that links to its own ancestor
+(`.../projects/p/memory -> .../.claude`), which is never a dotfiles layout
+and always means "wipe my parent tree". The preset redirect guard is
+stricter because preset paths are implicit trust, not a user's own words.
+
+**Time windows.** `--after T` and `--before T` narrow any file scope to the
+entries whose own mtime (`lstat`, never the link's destination) falls in the
+window. `--after` is the neuralizer flash (erase all state since T);
+`--before` is the retention cut. The window is per file: a database file goes
+whole or stays whole, and the plan names each such file. An entry that cannot
+be dated is an error (incomplete plan, failed verify), never a quiet skip.
+Directories are pruned only when the wipe emptied them; an untouched empty
+directory is state outside the window and stays. The window never applies to
+`remote` (both `wipe` and `list-state` refuse), and the pre-wipe snapshot
+covers the whole root regardless.
 
 **Presets** (`docs/../src/neurailyzer/presets.py`) map a known harness to the
 scopes above plus its keep-list, so `neurailyzer detect --enable` configures a
@@ -108,7 +142,7 @@ Every `Wiper` implements **`plan()`** (returns what *would* change — the dry-r
 
 ## 8. Keep-list
 
-A configurable allow-list of paths / collections / memory keys that are **never** wiped — your app's durable long-term memory, pinned notes, and NeurAIlyzer's own snapshot store. If a wipe target intersects the keep-list, the adapter skips it and **reports the skip** — it never silently honors *or* silently ignores a keep-list entry. This is how "keep what matters" works: you mark it, we leave it. No summarizing, no compression — just protection.
+A configurable allow-list of paths / collections / memory keys that are **never** wiped — credentials, settings, the harness's own install, pinned notes, and NeurAIlyzer's own snapshot store. (A harness's durable memory is the `memory` scope, §4: kept by every other scope, wiped only when asked by name.) If a wipe target intersects the keep-list, the adapter skips it and **reports the skip** — it never silently honors *or* silently ignores a keep-list entry. This is how "keep what matters" works: you mark it, we leave it. No summarizing, no compression — just protection.
 
 ## 9. Safety rails
 
@@ -117,6 +151,8 @@ A configurable allow-list of paths / collections / memory keys that are **never*
 - **Keep-list.** Honored on every wipe (§8).
 - **Scoped credentials.** Remote adapters read least-privilege, per-provider tokens from the **environment** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`) — never a broad admin token, never logged, never stored in config. OS-keyring sourcing is a possible future addition; today it is env vars only.
 - **Confirmation token** for `--scope all --commit` (type the target name).
+- **Human-only levers over MCP.** `all` is refused outright over MCP (not even a plan); `remote` and `memory` can be planned by an agent but committed only at the CLI.
+- **Time windows refuse the remote scope.** A provider API has no per-item clock; applying a window there would silently delete more than asked on the one scope that cannot be restored.
 
 ## 10. Threat model
 
@@ -128,7 +164,7 @@ A configurable allow-list of paths / collections / memory keys that are **never*
 ## 11. Non-goals
 
 - **Not a compressor / summarizer.** If you want to shrink context *before* it reaches a model, that's a separate concern with its own dedicated tools — pair NeurAIlyzer with one if you like. NeurAIlyzer wipes state and protects a keep-list; it does not rewrite or condense what it keeps.
-- **Not a memory store.** Long-term memory lives in your app and is protected by the keep-list; we wipe and snapshot around it.
+- **Not a memory store.** Long-term memory lives in your app. We never write it, summarize it or compress it; we snapshot it, keep it under every scope but `memory`, and remove it only when `wipe memory` or `wipe all` says so.
 - **Not a way to "de-bias" a base model's weights** — that's not state.
 
 ## 12. Open decisions

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from .config import FILE_SCOPES, PENDING_SCOPES, REMOTE_SCOPE, Config
 from .snapshots import Snapshot, SnapshotStore
+from .timewindow import TimeWindow
 from .wipers.base import WipePlan, Wiper
 from .wipers.local import PathWiper
 from .wipers.remote import PROVIDERS, RemoteWiper
@@ -17,6 +18,20 @@ from .wipers.remote import PROVIDERS, RemoteWiper
 
 class WipeRefused(RuntimeError):
     """The requested wipe violates a safety invariant."""
+
+
+def _check_window(scopes: list[str], window: TimeWindow | None) -> None:
+    """A time window is a file-mtime filter; a provider API has no such clock.
+
+    Silently ignoring the window for ``remote`` would delete MORE than the
+    caller asked for, on the one scope that cannot be restored -- so it is
+    refused before anything is planned.
+    """
+    if window is not None and not window.is_open and REMOTE_SCOPE in scopes:
+        raise WipeRefused(
+            "a time window (--after/--before) applies to file scopes only; "
+            "the remote scope has no per-item clock. Wipe remote separately."
+        )
 
 
 @dataclass(frozen=True)
@@ -31,7 +46,11 @@ class ScopeStatus:
     #: from list-state); it must never be rendered as 0.
     file_count: int
     total_bytes: int
+    #: keep-list skips only -- never window notes or errors
     kept_count: int
+    #: False when the survey could not see or date part of the target; a
+    #: count from a partial view must never render as "ready"
+    complete: bool = True
 
     @property
     def counted(self) -> bool:
@@ -54,20 +73,28 @@ def expand_scopes(scopes: list[str]) -> list[str]:
     return list(dict.fromkeys(scopes))  # dedupe, keep order
 
 
-def build_wipers(config: Config, scopes: list[str]) -> list[Wiper]:
-    """Wipers for every requested scope that is configured and available."""
+def build_wipers(
+    config: Config, scopes: list[str], window: TimeWindow | None = None
+) -> list[Wiper]:
+    """Wipers for every requested scope that is configured and available.
+
+    Each file wiper gets the keep-list FOR ITS SCOPE: only the ``memory``
+    wiper may remove memory; a ``session`` wiper walking the same tree keeps
+    it (``Config.keep_for``).
+    """
+    _check_window(scopes, window)
     wipers: list[Wiper] = []
     for scope in scopes:
         roots = config.roots_for(scope)
         if scope in FILE_SCOPES and roots:
-            wipers.append(PathWiper(scope, roots, config.keep))
+            wipers.append(PathWiper(scope, roots, config.keep_for(scope), window=window))
         elif scope == REMOTE_SCOPE:
             for provider_id, surfaces in config.remote.items():
                 wipers.append(RemoteWiper(PROVIDERS[provider_id], surfaces))
     return wipers
 
 
-def scope_status(config: Config, scope: str) -> ScopeStatus:
+def scope_status(config: Config, scope: str, window: TimeWindow | None = None) -> ScopeStatus:
     if scope == REMOTE_SCOPE:
         # list-state makes no network call, so counts are UNKNOWN here -- not
         # zero. Reporting 0 would read as "nothing to lose" for the one scope
@@ -88,7 +115,7 @@ def scope_status(config: Config, scope: str) -> ScopeStatus:
     available = scope in FILE_SCOPES
     if not (available and roots):
         return ScopeStatus(scope, bool(roots), available, tuple(map(str, roots)), 0, 0, 0)
-    plan = PathWiper(scope, roots, config.keep).plan()
+    plan = PathWiper(scope, roots, config.keep_for(scope), window=window).plan()
     return ScopeStatus(
         scope=scope,
         configured=True,
@@ -96,13 +123,16 @@ def scope_status(config: Config, scope: str) -> ScopeStatus:
         roots=tuple(map(str, roots)),
         file_count=plan.item_count,
         total_bytes=plan.bytes_total,
-        kept_count=len(plan.notes),
+        kept_count=sum(1 for n in plan.notes if n.startswith("keep-list skip:")),
+        complete=plan.complete,
     )
 
 
-def plan_wipe(config: Config, scopes: list[str]) -> list[WipePlan]:
+def plan_wipe(
+    config: Config, scopes: list[str], window: TimeWindow | None = None
+) -> list[WipePlan]:
     """Dry-run: what each configured scope would lose. Mutates nothing."""
-    return [w.plan() for w in build_wipers(config, scopes)]
+    return [w.plan() for w in build_wipers(config, scopes, window)]
 
 
 def execute_wipe(
@@ -111,13 +141,15 @@ def execute_wipe(
     *,
     take_snapshot: bool = True,
     label: str = "pre-wipe",
+    window: TimeWindow | None = None,
 ) -> WipeReport:
     """Snapshot (unless waived), then commit each wiper, then verify.
 
     The snapshot-before-wipe invariant lives HERE, not in the CLI, so every
-    surface (CLI, MCP, library) inherits it.
+    surface (CLI, MCP, library) inherits it. The snapshot covers the WHOLE
+    root, window or not: a time-windowed wipe is restored like any other.
     """
-    wipers = build_wipers(config, scopes)
+    wipers = build_wipers(config, scopes, window)
     if not wipers:
         return WipeReport(snapshot=None, plans=(), verified={})
 
@@ -147,6 +179,7 @@ def execute_wipe(
                 for pid, p in manifests.items()
             }
             or None,
+            memory_keep=config.memory_keep.as_record(),
         )
         store.prune(config.retention)
 

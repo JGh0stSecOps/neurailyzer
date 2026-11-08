@@ -16,8 +16,18 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, core, liveness
-from .config import FILE_SCOPES, PENDING_SCOPES, REMOTE_SCOPE, Config, ConfigError, load
+from .config import (
+    FILE_SCOPES,
+    MEMORY_SCOPE,
+    PENDING_SCOPES,
+    REMOTE_SCOPE,
+    Config,
+    ConfigError,
+    KeepList,
+    load,
+)
 from .snapshots import SnapshotError, SnapshotStore
+from .timewindow import TimeWindow, TimeWindowError, parse_when
 
 
 class McpUnavailable(RuntimeError):
@@ -79,6 +89,18 @@ def build_server(config_path: str | None = None) -> Any:
                     "total_bytes": st.total_bytes,
                     "keep_list_protected": st.kept_count,
                     "counted": st.counted,
+                    # a partial survey (unreadable subtree) is a FLOOR, not a
+                    # count; an agent must be able to tell the two apart
+                    "complete": st.complete,
+                    "status": (
+                        "no adapter"
+                        if not st.available
+                        else "not configured"
+                        if not st.configured
+                        else "incomplete"
+                        if not st.complete
+                        else "ready"
+                    ),
                     "irreversible": scope == REMOTE_SCOPE,
                 }
             )
@@ -93,7 +115,7 @@ def build_server(config_path: str | None = None) -> Any:
         if not targets:
             return {"ok": False, "reason": "no targets configured"}
         store = SnapshotStore(cfg.snapshot_dir)
-        snap = store.take(targets, label)
+        snap = store.take(targets, label, memory_keep=cfg.memory_keep.as_record())
         store.prune(cfg.retention)
         return {
             "ok": True,
@@ -105,13 +127,21 @@ def build_server(config_path: str | None = None) -> Any:
 
     @server.tool(
         description=(
-            "Reset state at the given scopes (session, sandbox, ...). Dry-run "
-            "unless commit=true; a snapshot is taken before any commit. "
-            "Scopes 'all' and 'remote' can only be COMMITTED by a human at "
-            "the CLI -- ask over MCP with commit=false to see their plan."
+            "Reset state at the given scopes (session, sandbox, memory, ...). "
+            "Dry-run unless commit=true; a snapshot is taken before any commit. "
+            "after/before narrow a file scope to a time window: ISO-8601 or a "
+            "span back from now (30m, 12h, 7d, 2w). Scopes 'all', 'remote' and "
+            "'memory' can only be COMMITTED by a human at the CLI -- ask over MCP "
+            "with commit=false to see their plan."
         )
     )
-    def nl_wipe(scopes: list[str], commit: bool = False, force: bool = False) -> dict[str, Any]:
+    def nl_wipe(
+        scopes: list[str],
+        commit: bool = False,
+        force: bool = False,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> dict[str, Any]:
         if "all" in scopes:
             return {
                 "ok": False,
@@ -128,15 +158,43 @@ def build_server(config_path: str | None = None) -> Any:
                 "`neurailyzer wipe remote --commit` yourself. (commit=false to "
                 "see the plan.)",
             }
+        # An agent erasing its OWN durable memory is the lever a human holds:
+        # it is reversible (snapshot), but the agent asking is the one whose
+        # record would vanish. Plan it here; commit it at the CLI.
+        if commit and MEMORY_SCOPE in core.expand_scopes(scopes):
+            return {
+                "ok": False,
+                "reason": "scope 'memory' cannot be committed over MCP: the agent's "
+                "durable memory is forgotten only by a human at the CLI "
+                "(`neurailyzer wipe memory --commit`). commit=false shows the plan.",
+            }
+        try:
+            window: TimeWindow | None = (
+                TimeWindow(
+                    after=parse_when(after) if after is not None else None,
+                    before=parse_when(before) if before is not None else None,
+                )
+                if (after is not None or before is not None)
+                else None
+            )
+        except TimeWindowError as exc:
+            return {"ok": False, "reason": f"time window refused: {exc}"}
+        if window is not None and REMOTE_SCOPE in core.expand_scopes(scopes):
+            return {
+                "ok": False,
+                "reason": "a time window applies to file scopes only; the remote "
+                "scope has no per-item clock. Plan remote separately.",
+            }
         cfg, refusal = _load_or_reason(config_path)
         if cfg is None:
             return refusal or {"ok": False, "reason": "unknown configuration error"}
         scopes = core.expand_scopes(scopes)
         if not commit:
-            plans = core.plan_wipe(cfg, scopes)
+            plans = core.plan_wipe(cfg, scopes, window)
             return {
                 "ok": True,
                 "dry_run": True,
+                "window": window.describe() if window else None,
                 "plans": [_plan_dict(p) for p in plans],
             }
         # An agent calling this mid-session is the case the liveness guard
@@ -149,7 +207,11 @@ def build_server(config_path: str | None = None) -> Any:
             pid: tuple(
                 r
                 for r in presets_mod.expand_existing(
-                    (*presets_mod.REGISTRY[pid].session, *presets_mod.REGISTRY[pid].sandbox)
+                    (
+                        *presets_mod.REGISTRY[pid].session,
+                        *presets_mod.REGISTRY[pid].sandbox,
+                        *presets_mod.REGISTRY[pid].memory,
+                    )
                 )
                 if r in scope_roots
             )
@@ -167,10 +229,11 @@ def build_server(config_path: str | None = None) -> Any:
                     {"preset": entry.preset_id, "reasons": list(entry.reasons)} for entry in live
                 ],
             }
-        report = core.execute_wipe(cfg, scopes, take_snapshot=True, label="mcp-wipe")
+        report = core.execute_wipe(cfg, scopes, take_snapshot=True, label="mcp-wipe", window=window)
         return {
             "ok": all(report.verified.values()),
             "dry_run": False,
+            "window": window.describe() if window else None,
             "snapshot": report.snapshot.id if report.snapshot else None,
             "plans": [_plan_dict(p) for p in report.plans],
             "verified": report.verified,
@@ -195,6 +258,21 @@ def build_server(config_path: str | None = None) -> Any:
             return {"ok": False, "reason": str(exc)}
         if snap is None:
             return {"ok": False, "reason": f"no snapshot at or before {to!r}"}
+        # Memory never changes over MCP, in either direction: nl_wipe refuses
+        # to forget it, nl_restore refuses to roll it back. The protection is
+        # the memory keep RECORDED with the snapshot plus today's. A snapshot
+        # that recorded none (pre-0.2) cannot establish which of ITS paths
+        # were memory -- today's config may name a different harness's -- so
+        # it is refused rather than guessed, whatever is configured now.
+        recorded = KeepList.from_record(snap.memory_keep)
+        if recorded is None:
+            return {
+                "ok": False,
+                "reason": "this snapshot carries no record of which of its paths are "
+                "agent memory (taken before 0.2), so a restore over MCP cannot keep "
+                "memory protected. Restore it at the CLI.",
+            }
+        keep = cfg.keep.merged(recorded)
         if commit:
             # A restore rewrites and deletes files, so the same live-harness
             # hazard applies -- and an agent restoring mid-session IS the
@@ -215,10 +293,11 @@ def build_server(config_path: str | None = None) -> Any:
             store.take(
                 {s: tuple(Path(p) for p in roots) for s, roots in snap.targets.items()},
                 label="pre-restore",
+                memory_keep=cfg.memory_keep.as_record(),
             )
-            plan = store.restore(snap, cfg.keep)
+            plan = store.restore(snap, keep)
         else:
-            plan = store.plan_restore(snap, cfg.keep)
+            plan = store.plan_restore(snap, keep)
         return {
             "ok": not plan.errors,
             "dry_run": not commit,

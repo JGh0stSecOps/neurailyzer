@@ -99,6 +99,9 @@ class Snapshot:
     #: provider -> what existed remotely at T. Remote deletes are one-way, so
     #: this is a RECORD, not restorable content (DESIGN 7).
     remote_manifest: dict[str, Any] | None = None
+    #: the memory keep entries in force when the snapshot was taken (see
+    #: Config.memory_keep). None on manifests from before this field existed.
+    memory_keep: dict[str, Any] | None = None
 
     @property
     def file_count(self) -> int:
@@ -150,9 +153,18 @@ def _walk_tree(root: Path) -> tuple[list[Path], list[Path], list[Path]]:
             f"({exc.strerror}) -- refusing to record an incomplete restore point"
         ) from exc
 
-    if root.is_symlink() or not root.exists():
+    # One explicit lstat on the root: `Path.exists()` is False for EACCES as
+    # well as ENOENT, and an unreadable root recorded as "nothing here" is an
+    # incomplete restore point wearing a complete one's face.
+    try:
+        st = os.lstat(root)
+    except FileNotFoundError:
         return files, dirs, links
-    if root.is_file():
+    except OSError as exc:
+        _raise(exc)
+    if stat.S_ISLNK(st.st_mode):
+        return files, dirs, links
+    if not stat.S_ISDIR(st.st_mode):
         return [root], dirs, links
     for cur, dnames, fnames in os.walk(root, followlinks=False, onerror=_raise):
         cur_p = Path(cur)
@@ -181,6 +193,7 @@ def _parse_manifest(data: dict[str, Any]) -> Snapshot:
         targets={k: tuple(v) for k, v in data["targets"].items()},
         dir_roots=tuple(data["dir_roots"]),
         remote_manifest=data.get("remote_manifest"),
+        memory_keep=data.get("memory_keep"),
         files=tuple(FileRecord(**f) for f in data["files"]),
         # tolerate the older 2-element form so pre-existing snapshots still load
         dirs=tuple(
@@ -236,8 +249,18 @@ class SnapshotStore:
         targets: dict[str, tuple[Path, ...]],
         label: str,
         remote_manifest: dict[str, Any] | None = None,
+        memory_keep: dict[str, Any] | None = None,
     ) -> Snapshot:
-        """Record every file/dir/symlink under the target roots."""
+        """Record every file/dir/symlink under the target roots.
+
+        ``memory_keep`` is the record of which paths are agent memory
+        (``Config.memory_keep.as_record()``); it travels with the restore
+        point so memory stays protected on restore even after the preset
+        that named it is gone. Omitted, it is recorded as UNKNOWN (``null``),
+        exactly like a pre-0.2 manifest, and a restore over MCP refuses the
+        snapshot. A caller who knows there is no memory says so explicitly:
+        ``memory_keep={"paths": [], "patterns": []}``.
+        """
         self._mkdir_private(self.blob_dir)
         self._mkdir_private(self.manifest_dir)
         if os.name != "nt":
@@ -299,6 +322,7 @@ class SnapshotStore:
             dirs=tuple(dirs),
             links=tuple(links),
             remote_manifest=remote_manifest,
+            memory_keep=memory_keep,
         )
         manifest = {
             "id": snap.id,
@@ -311,6 +335,7 @@ class SnapshotStore:
             "dirs": [vars(d) for d in snap.dirs],
             "links": [vars(ln) for ln in snap.links],
             "remote_manifest": snap.remote_manifest,
+            "memory_keep": snap.memory_keep,
         }
         path = self.manifest_dir / f"{snap_id}.json"
         path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")

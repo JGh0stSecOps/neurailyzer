@@ -116,3 +116,28 @@ def test_a_fully_readable_wipe_is_still_complete(state: dict[str, Path]) -> None
     result = wiper.commit()
     assert result.complete is True
     assert wiper.verify()
+
+
+def test_an_unreadable_root_is_incomplete_not_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EACCES on the root must not read as 'absent': an unreadable root plans
+    as incomplete and never verifies, instead of planning zero and verifying
+    clean while every file it holds survives."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    (root / "t.jsonl").write_text("x")
+    real_lstat = os.lstat
+
+    def denied(p: object, *a: object, **k: object) -> object:
+        if Path(str(p)) == root:
+            raise PermissionError(13, "Permission denied", str(p))
+        return real_lstat(p, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("neurailyzer.wipers.local.os.lstat", denied)
+    w = PathWiper("session", [root], KeepList())
+    plan = w.plan()
+    assert plan.complete is False
+    assert any("could not read" in n for n in plan.notes)
+    assert w.verify() is False
+    assert (root / "t.jsonl").exists()

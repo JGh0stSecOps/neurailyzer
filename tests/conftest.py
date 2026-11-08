@@ -87,7 +87,13 @@ def damaged_restore(
     """A damaged restore point alongside newer state that must survive refusal."""
     cfg = load(state["config"])
     store = SnapshotStore(cfg.snapshot_dir)
-    snap = store.take({s: cfg.roots_for(s) for s in ("session", "sandbox")}, "golden")
+    # an explicit empty record: this fixture has [targets] only, no memory --
+    # an OMITTED record is "unknown" and MCP restore refuses it by design
+    snap = store.take(
+        {s: cfg.roots_for(s) for s in ("session", "sandbox")},
+        "golden",
+        memory_keep={"paths": [], "patterns": []},
+    )
     record = next(f for f in snap.files if f.relpath == "notes.txt")
     blob = store.blob_dir / record.sha256[:2] / record.sha256
     (state["sandbox"] / "notes.txt").write_text("new notes")

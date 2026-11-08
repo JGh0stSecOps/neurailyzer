@@ -35,9 +35,19 @@ The concrete map of agent/model state, where it lives, how an adapter resets it,
 - **Snapshot:** optional tarball of the workspace (skippable for disposable scratch).
 - **Verify:** workspace empty except seeded files.
 
+### Durable memory — what the agent wrote down about you  (`--scope memory`)
+- **What:** the harness's own long-term memory: Claude Code `projects/*/memory`, Codex `memories_*.sqlite*`, Hermes `memories/` + `memory_store.db`, Grok `memory/`.
+- **Mechanism:** file-tree delete, snapshot first. **Kept by every other scope** — `session` walks the same tree and skips it, reported. Wiped only by `memory` or `all`. Over MCP: plan yes, commit no.
+- **Verify:** the memory trees are empty; credentials, settings and the install beside them are untouched.
+
 ### Learned corrections / notes (optional)
 - **What:** agent scratch notes, per-tool caches, "learned" files.
 - **Mechanism:** delete/reset per config; **the keep-list protects the ones you want.**
+
+### Time window (any file scope)
+- **What:** only entries modified at/after `--after T` and/or before `--before T`, by `lstat` mtime.
+- **Mechanism:** the wiper classifies each entry in / out of the window; out-of-window entries are skipped and counted. A database file is one mtime for every row, so it goes whole or stays whole — the plan names it.
+- **Verify:** nothing left *inside* the window.
 
 ---
 
@@ -67,4 +77,4 @@ The concrete map of agent/model state, where it lives, how an adapter resets it,
 
 ## Keep-list (never wiped)
 
-A configurable allow-list of paths / collections / memory keys that are *never* wiped — e.g. your app's durable long-term memory, and NeurAIlyzer's own snapshot store. If a target intersects the keep-list, the adapter skips it and reports the skip — never silently honors *or* silently ignores it.
+A configurable allow-list of paths / collections / memory keys that are *never* wiped — credentials, settings, the install, and NeurAIlyzer's own snapshot store. (The harness's durable memory is its own scope above, kept by every scope but that one.) If a target intersects the keep-list, the adapter skips it and reports the skip — never silently honors *or* silently ignores it.

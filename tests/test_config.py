@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,9 +10,15 @@ import pytest
 from neurailyzer.config import ConfigError, KeepList, load
 
 
-def test_missing_default_config_is_safe_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_default_config_is_safe_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.delenv("NEURAILYZER_CONFIG", raising=False)
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/nonexistent-home")))
+    # `~` expands through $HOME / %USERPROFILE%, not Path.home(): patch both,
+    # or a developer with a real ~/.neurailyzer/config.toml fails this test
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     cfg = load()
     assert cfg.targets == {}
     assert cfg.source is None
@@ -99,3 +106,48 @@ def test_env_var_discovery(state: dict[str, Path], monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("NEURAILYZER_CONFIG", str(state["config"]))
     cfg = load()
     assert cfg.roots_for("sandbox") == (state["sandbox"],)
+
+
+def test_explicit_target_linking_to_its_own_ancestor_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`[targets.X] paths = [".../projects/p/memory"]` where that path is a
+    symlink to `.../.claude` would make the wipe root the whole harness dir,
+    credentials included. A link to an ancestor is never a dotfiles layout;
+    it is "wipe my parent tree", so config load refuses it for every scope."""
+    if sys.platform == "win32":
+        pytest.skip("directory symlinks need a privilege on Windows runners")
+    harness = tmp_path / ".claude"
+    (harness / "projects" / "p").mkdir(parents=True)
+    (harness / ".credentials.json").write_text("secret")
+    link = harness / "projects" / "p" / "memory"
+    link.symlink_to(harness, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    # a stow-managed root beside the real dir: `~/.claude -> real`, and the
+    # memory link points at `real`. No LEXICAL parent of the written path is
+    # `real`; only an ancestor's resolved identity reveals the cycle.
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / ".claude").symlink_to(harness, target_is_directory=True)
+    spellings = (
+        link.as_posix(),  # absolute
+        ".claude/projects/p/memory",  # relative to cwd
+        ".claude/projects/p/../p/memory",  # with a `..` segment
+        (tmp_path / "home" / ".claude" / "projects" / "p" / "memory").as_posix(),  # via stow root
+    )
+    (tmp_path / "CASEPROBE").mkdir()
+    if (tmp_path / "caseprobe").exists():
+        # a case-insensitive volume (macOS default, Windows): a differently
+        # cased spelling of the ancestor is the same directory to the
+        # filesystem and must be caught like any other
+        flipped = harness.parent / ".CLAUDE" / "projects" / "p" / "memory"
+        spellings = (*spellings, flipped.as_posix())
+    for scope in ("memory", "session"):
+        for spelled in spellings:
+            cfg = tmp_path / f"{scope}.toml"
+            cfg.write_text(
+                f'[targets.{scope}]\npaths = ["{spelled}"]\n\n'
+                f'[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+            )
+            with pytest.raises(ConfigError, match="ancestor"):
+                load(cfg)
+    assert (harness / ".credentials.json").exists()
