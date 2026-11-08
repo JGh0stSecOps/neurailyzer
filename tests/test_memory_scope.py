@@ -287,3 +287,56 @@ def test_stow_managed_root_does_not_false_skip_memory(home: dict[str, Any], tmp_
     assert not fact.exists()
     assert (real / "projects" / "-Users-me-repo" / "sess-1.jsonl").exists()
     assert '"KEEP-ME"' in (real / ".credentials.json").read_text()
+
+
+@pytest.mark.e2e
+def test_home_with_glob_characters_never_selects_a_sibling_tree(tmp_path: Path) -> None:
+    """HOME=/x/home[1]: the preset's `~/.claude/projects/*/memory` glob must
+    expand `~` as a LITERAL, or `[1]` becomes pattern syntax and the wipe
+    selects /x/home1 -- somebody else's memory."""
+    victim = tmp_path / "home1"
+    me = tmp_path / "home[1]"
+    for h in (victim, me):
+        (h / ".claude" / "projects" / "p" / "memory").mkdir(parents=True)
+        (h / ".claude" / "projects" / "p" / "memory" / "fact.md").write_text(h.name)
+    config = tmp_path / "c.toml"
+    config.write_text(
+        '[presets]\nenabled = ["claude-code"]\n\n'
+        f'[snapshots]\ndir = "{(tmp_path / "snaps").as_posix()}"\n'
+    )
+    env = {
+        **os.environ,
+        "HOME": str(me),
+        "USERPROFILE": str(me),
+        "NO_COLOR": "1",
+        "TERM": "dumb",
+        "COLUMNS": "220",
+        "NEURAILYZER_CONFIG": str(config),
+        "NEURAILYZER_DISABLE_PROCESS_SCAN": "1",
+    }
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    r = run_cli(env, "wipe", "memory", "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert not (me / ".claude" / "projects" / "p" / "memory" / "fact.md").exists()
+    assert (victim / ".claude" / "projects" / "p" / "memory" / "fact.md").read_text() == "home1"
+
+
+@pytest.mark.e2e
+def test_symlink_alias_does_not_shadow_the_real_memory_dir(home: dict[str, Any]) -> None:
+    """projects/-a/memory -> ../-z/memory sorts before the real dir. If the
+    alias wins deduplication, the redirect guard skips it and the real memory
+    is silently never wiped. The non-symlink spelling must win."""
+    if sys.platform == "win32":
+        pytest.skip("directory symlinks need a privilege on Windows runners")
+    claude = home["claude"]
+    real = claude / "projects" / "-z" / "memory"
+    real.mkdir(parents=True)
+    (real / "fact.md").write_text("real\n")
+    alias_parent = claude / "projects" / "-a"
+    alias_parent.mkdir()
+    (alias_parent / "memory").symlink_to(Path("..") / "-z" / "memory", target_is_directory=True)
+
+    r = run_cli(home["env"], "wipe", "memory", "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert not (real / "fact.md").exists(), "the alias shadowed the real memory dir"
+    assert (alias_parent / "memory").is_symlink()  # the link itself is untouched

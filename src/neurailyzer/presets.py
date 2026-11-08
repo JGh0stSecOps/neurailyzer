@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import glob as globmod
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,28 +72,58 @@ def _expand(template: str) -> Path:
     return Path(os.path.expandvars(template)).expanduser()
 
 
+_ENV_REF = re.compile(r"\$(\w+|\{[^}]*\})")
+
+
+def _expand_pattern(template: str) -> str:
+    """Expand ``~`` and ``$VARS`` for use as a GLOB, escaping what they expand to.
+
+    Only the template's own ``*?[`` are pattern syntax. A home directory or
+    env value containing ``[`` (``/Users/home[1]``) is a literal path, and
+    interpolating it unescaped would let the glob select a sibling tree
+    (``/Users/home1``) -- another user's memory, wiped as this user's.
+    An unset variable stays as written, exactly as ``os.path.expandvars``
+    leaves it, so the path does not exist and contributes nothing.
+    """
+
+    def _env(m: re.Match[str]) -> str:
+        name = m.group(1).strip("{}")
+        return globmod.escape(os.environ[name]) if name in os.environ else m.group(0)
+
+    if template == "~" or template.startswith(("~/", "~\\")):
+        template = globmod.escape(os.path.expanduser("~")) + template[1:]
+    return _ENV_REF.sub(_env, template)
+
+
 def expand_existing(templates: tuple[str, ...]) -> tuple[Path, ...]:
     """Expand templates (globs allowed) and keep only paths that exist now.
 
     Globs matter because harnesses version their filenames (Codex's
     ``state_5.sqlite``) or nest per-profile/per-project trees — hardcoding
     those would silently rot.
+
+    Two spellings of one real path are deduplicated, and the spelling that is
+    NOT a symlink wins: a link alias ``projects/a/memory -> ../z/memory`` must
+    never shadow the real ``projects/z/memory``, or the redirect guard skips
+    the alias and the real memory is silently never wiped.
     """
-    out: list[Path] = []
-    seen: set[Path] = set()
+    candidates: list[Path] = []
     for t in templates:
-        p = _expand(t)
-        candidates = (
-            [Path(m) for m in sorted(globmod.glob(str(p), recursive=True))]
-            if any(c in t for c in "*?[")
-            else [p]
-        )
-        for c in candidates:
-            r = c.resolve()
-            if c.exists() and r not in seen:
-                seen.add(r)
-                out.append(c)
-    return tuple(out)
+        if any(c in t for c in "*?["):
+            candidates.extend(
+                Path(m) for m in sorted(globmod.glob(_expand_pattern(t), recursive=True))
+            )
+        else:
+            candidates.append(_expand(t))
+    out: dict[Path, Path] = {}  # resolved -> chosen spelling
+    for c in candidates:
+        if not c.exists():
+            continue
+        r = c.resolve()
+        prior = out.get(r)
+        if prior is None or (prior.is_symlink() and not c.is_symlink()):
+            out[r] = c
+    return tuple(out.values())
 
 
 def expand_all(templates: tuple[str, ...]) -> tuple[Path, ...]:

@@ -35,6 +35,14 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 - MCP `nl_list_state` reports `complete` and a `status` per scope, so an agent
   can tell a floor from a count.
 
+### Fixed
+- Preset templates expand `~` and `$VARS` as **literals** before globbing: a
+  home directory such as `/Users/home[1]` no longer turns `[1]` into pattern
+  syntax that selects the sibling `/Users/home1` (every scope, since 0.1.0).
+- When two spellings resolve to one path, the non-symlink spelling wins
+  deduplication, so a link alias cannot shadow the real memory dir and leave
+  it silently un-wiped.
+
 ### Changed
 - `wipe all` now includes `memory`. Before, the README promised to reset an
   agent's "memory" while the `claude-code` preset protected it under every

@@ -121,6 +121,28 @@ PLANTS: tuple[Plant, ...] = (
             ),
         ),
     ),
+    Plant(
+        "glob-escapes-expanded-home",
+        "src/neurailyzer/presets.py",
+        "tests/test_memory_scope.py::test_home_with_glob_characters_never_selects_a_sibling_tree",
+        (
+            (
+                'template = globmod.escape(os.path.expanduser("~")) + template[1:]',
+                'template = os.path.expanduser("~") + template[1:]',
+            ),
+        ),
+    ),
+    Plant(
+        "non-symlink-spelling-wins-dedup",
+        "src/neurailyzer/presets.py",
+        "tests/test_memory_scope.py::test_symlink_alias_does_not_shadow_the_real_memory_dir",
+        (
+            (
+                "if prior is None or (prior.is_symlink() and not c.is_symlink()):",
+                "if prior is None:",
+            ),
+        ),
+    ),
     # -- time windows ---------------------------------------------------------
     Plant(
         "window-filter",
