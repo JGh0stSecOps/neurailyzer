@@ -134,6 +134,13 @@ def test_explicit_target_linking_to_its_own_ancestor_is_refused(
         ".claude/projects/p/../p/memory",  # with a `..` segment
         (tmp_path / "home" / ".claude" / "projects" / "p" / "memory").as_posix(),  # via stow root
     )
+    (tmp_path / "CASEPROBE").mkdir()
+    if (tmp_path / "caseprobe").exists():
+        # a case-insensitive volume (macOS default, Windows): a differently
+        # cased spelling of the ancestor is the same directory to the
+        # filesystem and must be caught like any other
+        flipped = harness.parent / ".CLAUDE" / "projects" / "p" / "memory"
+        spellings = (*spellings, flipped.as_posix())
     for scope in ("memory", "session"):
         for spelled in spellings:
             cfg = tmp_path / f"{scope}.toml"

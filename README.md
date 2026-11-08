@@ -132,13 +132,16 @@ Point NeurAIlyzer at your agent's state in `~/.neurailyzer/config.toml`:
 ```toml
 [keep]
 # NEVER wiped, no matter what. Skips are reported, never silent.
-paths = ["~/agents/memory"]
+paths = ["~/agents/pinned-notes", "~/agents/credentials.json"]
 
 [targets.session]           # conversation/thread history (files, JSONL, SQLite…)
 paths = ["~/agents/sessions"]
 
 [targets.sandbox]           # tool-sandbox scratch, downloads, temp
 paths = ["~/agents/scratch"]
+
+[targets.memory]            # the agent's durable memory: kept by `session` and
+paths = ["~/agents/memory"] # `sandbox`, wiped only by `wipe memory` / `wipe all`
 
 [snapshots]
 dir = "~/.neurailyzer/snapshots"   # always outside the wipe targets; auto-kept

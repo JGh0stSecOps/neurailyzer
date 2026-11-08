@@ -310,11 +310,18 @@ class Config:
 
 
 def _resolves_to(candidate: Path, target: Path) -> bool:
-    """True if *candidate* is *target* by spelling or by resolved identity."""
-    if candidate == target:
+    """True if *candidate* is *target*: by spelling, by resolved identity, or
+    by the filesystem's own word (``samefile``) -- so a case or Unicode
+    variant of an ancestor on a case-insensitive volume is still that
+    ancestor. Comparisons go through ``_same`` (case-folded where the
+    filesystem folds, NFC-normalised), never raw string equality.
+    """
+    if _same(candidate, target):
         return True
     try:
-        return candidate.resolve() == target
+        if _same(candidate.resolve(), target):
+            return True
+        return os.path.samefile(candidate, target)
     except OSError:
         return False
 

@@ -227,6 +227,20 @@ PLANTS: tuple[Plant, ...] = (
         ),
     ),
     Plant(
+        "ancestor-link-case-alias",
+        "src/neurailyzer/config.py",
+        "tests/test_config.py::test_explicit_target_linking_to_its_own_ancestor_is_refused",
+        (
+            (
+                "    if _same(candidate, target):\n        return True\n    try:\n"
+                "        if _same(candidate.resolve(), target):\n            return True\n"
+                "        return os.path.samefile(candidate, target)\n",
+                "    if candidate == target:\n        return True\n    try:\n"
+                "        return candidate.resolve() == target\n",
+            ),
+        ),
+    ),
+    Plant(
         "unreadable-root-is-incomplete",
         "src/neurailyzer/wipers/local.py",
         "tests/test_wipers.py::test_an_unreadable_root_is_incomplete_not_empty",
