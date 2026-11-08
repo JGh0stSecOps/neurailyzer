@@ -253,3 +253,37 @@ def test_symlinked_memory_dir_is_skipped_not_followed(home: dict[str, Any]) -> N
     assert (claude / "history.jsonl").exists()  # nothing behind the link moved
     assert (trap / "memory").is_symlink()
     assert not (home["proj"] / "memory" / "fact.md").exists()  # real memory still wiped
+
+
+def test_library_config_without_hard_keep_keeps_everything_for_memory(tmp_path: Path) -> None:
+    """A hand-built Config (library use) that supplies `keep` but no
+    `hard_keep` must hand the memory wiper the caller's keep-list, not an
+    empty one -- a caller-protected credential inside a memory target holds."""
+    from neurailyzer.config import Config, KeepList
+
+    secret = tmp_path / "memory" / "secret"
+    cfg = Config(keep=KeepList(paths=(secret,)), targets={"memory": (secret.parent,)})
+    assert cfg.keep_for("memory").protects(secret)
+    assert cfg.keep_for("session").protects(secret)
+
+
+@pytest.mark.e2e
+def test_stow_managed_root_does_not_false_skip_memory(home: dict[str, Any], tmp_path: Path) -> None:
+    """`~/.claude -> $HOME/real` with CLAUDE_CONFIG_DIR=$HOME/real: both are
+    the harness ROOT. The redirect guard must stop at the root through either
+    spelling, not read the root's own link as a redirect below it."""
+    if sys.platform == "win32":
+        pytest.skip("directory symlinks need a privilege on Windows runners")
+    real = home["home"] / "real"
+    (home["claude"]).rename(real)
+    home["claude"].symlink_to(real, target_is_directory=True)
+    env = {**home["env"], "CLAUDE_CONFIG_DIR": str(real)}
+    fact = real / "projects" / "-Users-me-repo" / "memory" / "fact.md"
+    assert fact.exists()
+
+    r = run_cli(env, "wipe", "memory", "--commit", "--force")
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "memory dir" not in r.stdout  # no false "skipped: memory dir ... is a symlink"
+    assert not fact.exists()
+    assert (real / "projects" / "-Users-me-repo" / "sess-1.jsonl").exists()
+    assert '"KEEP-ME"' in (real / ".credentials.json").read_text()

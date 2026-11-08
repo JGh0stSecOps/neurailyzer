@@ -35,7 +35,13 @@ All notable changes to NeurAIlyzer are documented here. The format follows
   agent's "memory" while the `claude-code` preset protected it under every
   scope — the docs lied. `all` is the one command that forgets everything,
   and it still snapshots first.
-- `list-state` lists the `memory` scope.
+- `list-state` lists the `memory` scope, counts only keep-list skips in its
+  `kept` column, and renders a scope whose survey was partial as
+  `incomplete` instead of `ready` (`ScopeStatus.complete`).
+- A hand-built `Config` (library use) with `keep` but no `hard_keep` gives the
+  memory wiper the caller's keep-list, never an empty one.
+- MCP `nl_wipe` treats an explicitly supplied empty `after`/`before` as a bad
+  bound (refused), not as "no window".
 
 ## [0.1.0] - 2026-08-06
 

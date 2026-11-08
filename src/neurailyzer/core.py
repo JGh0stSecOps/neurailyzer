@@ -46,7 +46,11 @@ class ScopeStatus:
     #: from list-state); it must never be rendered as 0.
     file_count: int
     total_bytes: int
+    #: keep-list skips only -- never window notes or errors
     kept_count: int
+    #: False when the survey could not see or date part of the target; a
+    #: count from a partial view must never render as "ready"
+    complete: bool = True
 
     @property
     def counted(self) -> bool:
@@ -119,7 +123,8 @@ def scope_status(config: Config, scope: str, window: TimeWindow | None = None) -
         roots=tuple(map(str, roots)),
         file_count=plan.item_count,
         total_bytes=plan.bytes_total,
-        kept_count=len(plan.notes),
+        kept_count=sum(1 for n in plan.notes if n.startswith("keep-list skip:")),
+        complete=plan.complete,
     )
 
 

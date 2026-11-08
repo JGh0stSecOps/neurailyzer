@@ -232,7 +232,7 @@ class Config:
     #: and by RESTORE (a restore must be able to bring memory back after a
     #: memory wipe; the full ``keep`` would skip it). Never used by any other
     #: wiper.
-    hard_keep: KeepList = field(default_factory=KeepList)
+    hard_keep: KeepList | None = None
     #: scope -> absolute target roots (FILE_SCOPES only).
     targets: Mapping[str, tuple[Path, ...]] = field(default_factory=dict)
     #: provider id -> enabled remote surfaces (see wipers/remote.py).
@@ -267,7 +267,12 @@ class Config:
         Only the ``memory`` scope may touch memory; every other scope sees the
         full list. Fails closed: an unknown scope gets the full list too.
         """
-        return self.hard_keep if scope == MEMORY_SCOPE else self.keep
+        if scope != MEMORY_SCOPE:
+            return self.keep
+        # A Config built by hand (library use) that supplied `keep` but no
+        # `hard_keep` must not hand the memory wiper an EMPTY keep-list: the
+        # caller's protections hold for every scope until they say otherwise.
+        return self.hard_keep if self.hard_keep is not None else self.keep
 
 
 def _redirected_below_root(path: Path, roots_literal: set[Path], roots_resolved: set[Path]) -> bool:
@@ -399,7 +404,12 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                 )
                 if not r.is_symlink()
             }
-            detect_literals = set(presets_mod.expand_existing(preset.detect))
+            # EVERY existing spelling of the harness root, not the deduplicated
+            # set: with `~/.claude -> $CLAUDE_CONFIG_DIR` (stow) both spellings
+            # are the root, and a memory path reached through either must stop
+            # the redirect walk at the root rather than read the root's own
+            # link as a redirect below it.
+            detect_literals = {p for p in presets_mod.expand_all(preset.detect) if p.exists()}
             detect_resolved = {r.resolve() for r in detect_literals}
             for scope_name, templates in (
                 ("session", preset.session),

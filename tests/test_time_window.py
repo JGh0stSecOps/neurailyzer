@@ -278,3 +278,62 @@ def test_mcp_wipe_accepts_a_window_and_refuses_it_on_remote(home: dict[str, Any]
     assert any("outside the window" in n for p in plan["plans"] for n in p["notes"])
     assert call({"scopes": ["session"], "after": "nonsense"})["ok"] is False
     assert call({"scopes": ["remote"], "after": "7d"})["ok"] is False
+
+
+def test_mcp_empty_bound_is_refused_not_unwindowed(home: dict[str, Any]) -> None:
+    """after="" is an explicit (bad) bound, not "no bound": it must refuse,
+    never fall through to a commit of the whole target."""
+    pytest.importorskip("mcp", reason="mcp extra not installed")
+    import asyncio
+
+    from neurailyzer.mcp_server import build_server
+
+    server = build_server(str(home["config"]))
+
+    def call(args: dict[str, Any]) -> Any:
+        result = asyncio.run(server.call_tool("nl_wipe", args))
+        assert not result.is_error, result.content
+        out = result.structured_content
+        return out["result"] if isinstance(out, dict) and set(out) == {"result"} else out
+
+    out = call({"scopes": ["session"], "after": "", "commit": True, "force": True})
+    assert out["ok"] is False and "time window" in out["reason"]
+    assert home["old"].exists() and home["new"].exists()  # nothing moved
+
+
+def test_scope_status_counts_keep_skips_only_and_carries_completeness(
+    dated: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from neurailyzer.config import Config
+
+    cfg = Config(targets={"session": (dated["root"],)})
+    st = core.scope_status(cfg, "session", TimeWindow(after=CUT))
+    assert st.kept_count == 0  # the window note is not a keep skip
+    assert st.complete is True
+
+    real_lstat = os.lstat
+
+    def flaky(path: Any, *a: Any, **k: Any) -> Any:
+        if Path(path) == dated["new"]:
+            raise OSError(5, "Input/output error")
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr("neurailyzer.wipers.local.os.lstat", flaky)
+    st = core.scope_status(cfg, "session", TimeWindow(after=CUT))
+    assert st.complete is False
+
+
+@pytest.mark.e2e
+def test_cli_list_state_shows_incomplete_when_a_file_cannot_be_read(home: dict[str, Any]) -> None:
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("needs an unreadable directory, which root and Windows ACLs do not give")
+    locked = home["root"] / "locked"
+    locked.mkdir()
+    (locked / "x.jsonl").write_text("x")
+    locked.chmod(0o000)
+    try:
+        r = run_cli(home["env"], "list-state", "-s", "session")
+        assert r.returncode == 0, r.stderr
+        assert "incomplete" in r.stdout and "ready" not in r.stdout
+    finally:
+        locked.chmod(0o700)

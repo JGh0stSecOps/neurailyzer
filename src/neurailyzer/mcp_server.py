@@ -158,10 +158,10 @@ def build_server(config_path: str | None = None) -> Any:
         try:
             window: TimeWindow | None = (
                 TimeWindow(
-                    after=parse_when(after) if after else None,
-                    before=parse_when(before) if before else None,
+                    after=parse_when(after) if after is not None else None,
+                    before=parse_when(before) if before is not None else None,
                 )
-                if (after or before)
+                if (after is not None or before is not None)
                 else None
             )
         except TimeWindowError as exc:

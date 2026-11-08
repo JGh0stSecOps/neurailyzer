@@ -143,6 +143,8 @@ def list_state(
             status = "[dim]no adapter yet (planned)[/dim]"
         elif not st.configured:
             status = "[yellow]not configured[/yellow]"
+        elif not st.complete:
+            status = "[red]incomplete[/red] -- part unread; counts are a floor"
         else:
             status = "[green]ready[/green]"
         shown = st.configured and st.available and st.counted
@@ -517,7 +519,7 @@ def restore(
     # `wipe session` restore point also holds memory bytes (the snapshot covers
     # the whole root), but rolling memory back from it would undo memory the
     # agent wrote since -- state the user never asked to touch.
-    keep = cfg.hard_keep if MEMORY_SCOPE in snap.scopes else cfg.keep
+    keep = cfg.keep_for(MEMORY_SCOPE) if MEMORY_SCOPE in snap.scopes else cfg.keep
     plan = store.restore(snap, keep) if commit else store.plan_restore(snap, keep)
     _print_restore(plan)
     if plan.errors:
