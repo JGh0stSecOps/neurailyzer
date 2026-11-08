@@ -258,6 +258,37 @@ def test_cli_span_form_and_refusals(home: dict[str, Any]) -> None:
     assert r.returncode == 2
     assert "remote" in r.stderr
 
+    # the advertised default call must work: a windowed inventory covers the
+    # file scopes and does not trip over its own remote default
+    r = run_cli(env, "list-state", "--after", "7d")
+    assert r.returncode == 0, r.stderr
+    assert "session" in r.stdout and "modified at/after" in r.stdout
+
+
+def test_mcp_list_state_reports_an_incomplete_survey(home: dict[str, Any]) -> None:
+    pytest.importorskip("mcp", reason="mcp extra not installed")
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("needs an unreadable directory, which root and Windows ACLs do not give")
+    import asyncio
+
+    from neurailyzer.mcp_server import build_server
+
+    locked = home["root"] / "locked"
+    locked.mkdir()
+    (locked / "x.jsonl").write_text("x")
+    locked.chmod(0o000)
+    try:
+        server = build_server(str(home["config"]))
+        result = asyncio.run(server.call_tool("nl_list_state", {}))
+        assert not result.is_error, result.content
+        out = result.structured_content
+        out = out["result"] if isinstance(out, dict) and set(out) == {"result"} else out
+        session = next(s for s in out["scopes"] if s["scope"] == "session")
+        assert session["complete"] is False
+        assert session["status"] == "incomplete"
+    finally:
+        locked.chmod(0o700)
+
 
 def test_mcp_wipe_accepts_a_window_and_refuses_it_on_remote(home: dict[str, Any]) -> None:
     pytest.importorskip("mcp", reason="mcp extra not installed")

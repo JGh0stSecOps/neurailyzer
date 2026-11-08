@@ -88,6 +88,18 @@ def build_server(config_path: str | None = None) -> Any:
                     "total_bytes": st.total_bytes,
                     "keep_list_protected": st.kept_count,
                     "counted": st.counted,
+                    # a partial survey (unreadable subtree) is a FLOOR, not a
+                    # count; an agent must be able to tell the two apart
+                    "complete": st.complete,
+                    "status": (
+                        "no adapter"
+                        if not st.available
+                        else "not configured"
+                        if not st.configured
+                        else "incomplete"
+                        if not st.complete
+                        else "ready"
+                    ),
                     "irreversible": scope == REMOTE_SCOPE,
                 }
             )

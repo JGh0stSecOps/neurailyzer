@@ -114,8 +114,11 @@ def main(
 
 @app.command("list-state")
 def list_state(
-    scope: list[Scope] = typer.Option(
-        [s for s in Scope if s is not Scope.all], "--scope", "-s", help="Scopes to inspect."
+    scope: list[Scope] | None = typer.Option(
+        None,
+        "--scope",
+        "-s",
+        help="Scopes to inspect (default: every scope; with --after/--before, the file scopes).",
     ),
     after: str | None = typer.Option(None, "--after", help=_AFTER_HELP),
     before: str | None = typer.Option(None, "--before", help=_BEFORE_HELP),
@@ -123,6 +126,15 @@ def list_state(
     """Show what state exists and what a wipe at these scopes *would* affect."""
     cfg = _load_config()
     window = _window(after, before)
+    if scope is None:
+        # the default inventory covers every scope; a windowed one covers the
+        # file scopes, since a provider API has no per-item clock. Naming
+        # `remote` explicitly beside a window is still a refusal below.
+        scope = [
+            s
+            for s in Scope
+            if s is not Scope.all and not (window is not None and s is Scope.remote)
+        ]
     if window is not None and Scope.remote in scope:
         err_console.print(
             "[red]refusing[/red] --after/--before with the remote scope: a provider "

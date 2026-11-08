@@ -19,7 +19,7 @@ None of this is the model's *weights* (those are frozen). But all of it conditio
 **Wipe → restore, with a keep-list.**
 
 1. **Wipe** the accumulated state, at a chosen scope, locally and remotely.
-2. **Keep-list** protects what you explicitly mark (your durable long-term memory, pinned files) — those are never wiped.
+2. **Keep-list** protects what you explicitly mark (credentials, settings, pinned files) — those are never wiped. A harness's own durable memory is the `memory` scope (§4): kept by every other scope, wiped only when you name it.
 3. **Restore** to a **point in time** when needed — because every wipe takes a snapshot first.
 
 The mental model is the sci-fi neuralyzer, with one upgrade the name earns: **you set the target time.** It's not only "wipe it all," it's "be who you were at 04:00, before that bad tool loop poisoned your context."
@@ -156,7 +156,7 @@ A configurable allow-list of paths / collections / memory keys that are **never*
 ## 11. Non-goals
 
 - **Not a compressor / summarizer.** If you want to shrink context *before* it reaches a model, that's a separate concern with its own dedicated tools — pair NeurAIlyzer with one if you like. NeurAIlyzer wipes state and protects a keep-list; it does not rewrite or condense what it keeps.
-- **Not a memory store.** Long-term memory lives in your app and is protected by the keep-list; we wipe and snapshot around it.
+- **Not a memory store.** Long-term memory lives in your app. We never write it, summarize it or compress it; we snapshot it, keep it under every scope but `memory`, and remove it only when `wipe memory` or `wipe all` says so.
 - **Not a way to "de-bias" a base model's weights** — that's not state.
 
 ## 12. Open decisions

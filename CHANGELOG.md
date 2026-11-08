@@ -29,6 +29,11 @@ All notable changes to NeurAIlyzer are documented here. The format follows
   plan because they go whole or stay whole. Refused on `remote` by both `wipe`
   and `list-state`. The MCP `nl_wipe` tool takes `after`/`before`.
 - `neurailyzer.timewindow` module (`TimeWindow`, `parse_when`).
+- `scripts/plants.py`: runnable receipts for every safety guard in this
+  change -- each plant disables one guard in a copy of the tree and expects
+  its test to go RED; `tests/test_plants_table.py` fails if an anchor drifts.
+- MCP `nl_list_state` reports `complete` and a `status` per scope, so an agent
+  can tell a floor from a count.
 
 ### Changed
 - `wipe all` now includes `memory`. Before, the README promised to reset an
