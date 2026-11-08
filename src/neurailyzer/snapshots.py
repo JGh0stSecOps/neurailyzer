@@ -153,9 +153,18 @@ def _walk_tree(root: Path) -> tuple[list[Path], list[Path], list[Path]]:
             f"({exc.strerror}) -- refusing to record an incomplete restore point"
         ) from exc
 
-    if root.is_symlink() or not root.exists():
+    # One explicit lstat on the root: `Path.exists()` is False for EACCES as
+    # well as ENOENT, and an unreadable root recorded as "nothing here" is an
+    # incomplete restore point wearing a complete one's face.
+    try:
+        st = os.lstat(root)
+    except FileNotFoundError:
         return files, dirs, links
-    if root.is_file():
+    except OSError as exc:
+        _raise(exc)
+    if stat.S_ISLNK(st.st_mode):
+        return files, dirs, links
+    if not stat.S_ISDIR(st.st_mode):
         return [root], dirs, links
     for cur, dnames, fnames in os.walk(root, followlinks=False, onerror=_raise):
         cur_p = Path(cur)

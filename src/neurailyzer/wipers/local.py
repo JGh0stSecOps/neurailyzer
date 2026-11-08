@@ -51,9 +51,20 @@ def _walk(root: Path) -> tuple[list[Path], list[Path], list[str]]:
     def _record(exc: OSError) -> None:
         errors.append(f"could not read {exc.filename}: {exc.strerror}")
 
-    if root.is_symlink() or not root.exists():
+    # The root is judged by one explicit lstat. `Path.exists()` answers False
+    # for EACCES as well as ENOENT, and "absent" would make an UNREADABLE root
+    # plan as empty, commit nothing and verify clean -- a false assurance of
+    # deletion. Only a genuinely missing root is a no-op.
+    try:
+        st = os.lstat(root)
+    except FileNotFoundError:
         return entries, dirs, errors
-    if root.is_file():
+    except OSError as exc:
+        errors.append(f"could not read {root}: {exc.strerror or exc}")
+        return entries, dirs, errors
+    if stat.S_ISLNK(st.st_mode):
+        return entries, dirs, errors
+    if not stat.S_ISDIR(st.st_mode):
         return [root], dirs, errors
     for cur, dnames, fnames in os.walk(root, followlinks=False, onerror=_record):
         cur_p = Path(cur)

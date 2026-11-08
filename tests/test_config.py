@@ -123,10 +123,16 @@ def test_explicit_target_linking_to_its_own_ancestor_is_refused(
     link = harness / "projects" / "p" / "memory"
     link.symlink_to(harness, target_is_directory=True)
     monkeypatch.chdir(tmp_path)
+    # a stow-managed root beside the real dir: `~/.claude -> real`, and the
+    # memory link points at `real`. No LEXICAL parent of the written path is
+    # `real`; only an ancestor's resolved identity reveals the cycle.
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / ".claude").symlink_to(harness, target_is_directory=True)
     spellings = (
         link.as_posix(),  # absolute
         ".claude/projects/p/memory",  # relative to cwd
         ".claude/projects/p/../p/memory",  # with a `..` segment
+        (tmp_path / "home" / ".claude" / "projects" / "p" / "memory").as_posix(),  # via stow root
     )
     for scope in ("memory", "session"):
         for spelled in spellings:

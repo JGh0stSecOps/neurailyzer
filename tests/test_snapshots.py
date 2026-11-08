@@ -461,3 +461,24 @@ def test_restore_handles_a_directory_that_became_a_file(state: dict[str, Path]) 
     assert not plan.errors, plan.errors
     assert memory.is_dir(), "a directory recorded as a directory did not come back"
     assert (memory / "note.md").read_text() == "ORIGINAL"
+
+
+def test_an_unreadable_root_refuses_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EACCES on a target root must refuse the restore point, not record it
+    as empty: a wipe that followed would have no way back."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    (root / "t.jsonl").write_text("x")
+    real_lstat = os.lstat
+
+    def denied(p: object, *a: object, **k: object) -> object:
+        if Path(str(p)) == root:
+            raise PermissionError(13, "Permission denied", str(p))
+        return real_lstat(p, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("neurailyzer.snapshots.os.lstat", denied)
+    store = SnapshotStore(tmp_path / "store")
+    with pytest.raises(SnapshotError, match="refusing to record an incomplete"):
+        store.take({"session": (root,)}, "x")

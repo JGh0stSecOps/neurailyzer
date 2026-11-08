@@ -309,6 +309,16 @@ class Config:
         return self.hard_keep if self.hard_keep is not None else self.keep
 
 
+def _resolves_to(candidate: Path, target: Path) -> bool:
+    """True if *candidate* is *target* by spelling or by resolved identity."""
+    if candidate == target:
+        return True
+    try:
+        return candidate.resolve() == target
+    except OSError:
+        return False
+
+
 def _redirected_below_root(path: Path, roots_literal: set[Path], roots_resolved: set[Path]) -> bool:
     """True if *path* or any ancestor BELOW its harness root is a symlink.
 
@@ -563,7 +573,10 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                     # `.../projects/p/memory -> .../.claude`: the wipe root
                     # would become the parent tree, credentials included. A
                     # link to an ancestor is never a dotfiles layout; refuse.
-                    if resolved in as_written.parents:
+                    # Compare against each ancestor's RESOLVED identity, not
+                    # its spelling: with a stow root `~/.claude -> real` and
+                    # `memory -> real`, no lexical parent equals `real`.
+                    if any(_resolves_to(anc, resolved) for anc in as_written.parents):
                         raise ConfigError(
                             f"[targets.{scope}] refusing target {as_written}: it is a "
                             f"symlink to its own ancestor {resolved} -- following it "

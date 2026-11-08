@@ -210,6 +210,40 @@ PLANTS: tuple[Plant, ...] = (
         "tests/test_config.py::test_explicit_target_linking_to_its_own_ancestor_is_refused",
         (("                if resolved in as_written.parents:", "                if False:"),),
     ),
+    Plant(
+        "ancestor-link-resolved-identity",
+        "src/neurailyzer/config.py",
+        "tests/test_config.py::test_explicit_target_linking_to_its_own_ancestor_is_refused",
+        (
+            (
+                "if any(_resolves_to(anc, resolved) for anc in as_written.parents):",
+                "if resolved in as_written.parents:",
+            ),
+        ),
+    ),
+    Plant(
+        "unreadable-root-is-incomplete",
+        "src/neurailyzer/wipers/local.py",
+        "tests/test_wipers.py::test_an_unreadable_root_is_incomplete_not_empty",
+        (
+            (
+                '        errors.append(f"could not read {root}: {exc.strerror or exc}")\n'
+                "        return entries, dirs, errors\n",
+                "        return entries, dirs, errors\n",
+            ),
+        ),
+    ),
+    Plant(
+        "unreadable-root-refuses-snapshot",
+        "src/neurailyzer/snapshots.py",
+        "tests/test_snapshots.py::test_an_unreadable_root_refuses_the_snapshot",
+        (
+            (
+                "    except OSError as exc:\n        _raise(exc)\n",
+                "    except OSError:\n        return files, dirs, links\n",
+            ),
+        ),
+    ),
     # -- time windows ---------------------------------------------------------
     Plant(
         "window-filter",
