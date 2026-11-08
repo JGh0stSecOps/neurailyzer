@@ -28,7 +28,10 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 #: scopes that have a working adapter in this release (file-tree state).
-FILE_SCOPES: tuple[str, ...] = ("session", "sandbox")
+#: ``memory`` is the harness's durable agent-written memory: every OTHER
+#: scope keeps it, so only an explicit ``memory`` (or ``all``) forgets it.
+FILE_SCOPES: tuple[str, ...] = ("session", "sandbox", "memory")
+MEMORY_SCOPE = "memory"
 #: provider-side stored state, configured via [remote.<provider>].
 REMOTE_SCOPE = "remote"
 #: scopes reserved by the design but without a shipped adapter yet.
@@ -220,8 +223,17 @@ class KeepList:
 class Config:
     """NeurAIlyzer configuration (see README Configuration)."""
 
+    #: the FULL keep-list: credentials, settings, the snapshot store AND every
+    #: memory target. Anything that reads ``keep`` without asking for a scope
+    #: gets the safe answer -- memory is protected.
     keep: KeepList = field(default_factory=KeepList)
-    #: scope -> absolute target roots. Only FILE_SCOPES appear here in v0.1.
+    #: the keep-list WITHOUT the memory targets -- credentials, settings, the
+    #: install, the snapshot store. Honoured by the ``memory`` scope's wiper
+    #: and by RESTORE (a restore must be able to bring memory back after a
+    #: memory wipe; the full ``keep`` would skip it). Never used by any other
+    #: wiper.
+    hard_keep: KeepList = field(default_factory=KeepList)
+    #: scope -> absolute target roots (FILE_SCOPES only).
     targets: Mapping[str, tuple[Path, ...]] = field(default_factory=dict)
     #: provider id -> enabled remote surfaces (see wipers/remote.py).
     remote: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -244,6 +256,14 @@ class Config:
 
     def roots_for(self, scope: str) -> tuple[Path, ...]:
         return tuple(self.targets.get(scope, ()))
+
+    def keep_for(self, scope: str) -> KeepList:
+        """The keep-list a wiper for *scope* must honour.
+
+        Only the ``memory`` scope may touch memory; every other scope sees the
+        full list. Fails closed: an unknown scope gets the full list too.
+        """
+        return self.hard_keep if scope == MEMORY_SCOPE else self.keep
 
 
 def _parse_paths(section: str, value: object) -> tuple[Path, ...]:
@@ -308,9 +328,14 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
     enabled = presets_raw.get("enabled", [])
     if not isinstance(enabled, list) or not all(isinstance(e, str) for e in enabled):
         raise ConfigError("[presets] enabled must be a list of strings")
-    preset_targets: dict[str, list[Path]] = {"session": [], "sandbox": []}
+    preset_targets: dict[str, list[Path]] = {s: [] for s in FILE_SCOPES}
     preset_keep_paths: list[Path] = []
     preset_keep_patterns: list[str] = []
+    # memory templates double as keep entries for every scope but `memory`
+    # (as patterns + literals, not only existing matches: memory written AFTER
+    # enablement must be protected by a `session` wipe too)
+    memory_keep_paths: list[Path] = []
+    memory_keep_patterns: list[str] = []
     #: (preset, template path, where it actually resolves) for preset targets
     #: that point outside their own harness root -- skipped, never wiped.
     escaped_targets: list[tuple[str, str, str]] = []
@@ -339,12 +364,15 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
             # being checked would authorize itself.
             own |= {
                 r.resolve()
-                for r in presets_mod.expand_existing((*preset.session, *preset.sandbox))
+                for r in presets_mod.expand_existing(
+                    (*preset.session, *preset.sandbox, *preset.memory)
+                )
                 if not r.is_symlink()
             }
             for scope_name, templates in (
                 ("session", preset.session),
                 ("sandbox", preset.sandbox),
+                (MEMORY_SCOPE, preset.memory),
             ):
                 for path in presets_mod.expand_existing(templates):
                     resolved = path.resolve()
@@ -360,6 +388,9 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
             kp, kpat = _split_keep(f"presets.{pid}", list(preset.keep))
             preset_keep_paths.extend(kp)
             preset_keep_patterns.extend(kpat)
+            mk, mkpat = _split_keep(f"presets.{pid}.memory", list(preset.memory))
+            memory_keep_paths.extend(mk)
+            memory_keep_patterns.extend(mkpat)
 
     # -- remote providers -----------------------------------------------------
     remote_raw = data.get("remote", {})
@@ -415,6 +446,14 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
                 f"[targets.{scope}] has no adapter in this release -- "
                 f"supported scopes today: {', '.join(FILE_SCOPES)}"
             )
+        if scope == MEMORY_SCOPE and isinstance(body, Mapping):
+            # a hand-listed memory tree is memory for every scope: keep it
+            # from session/sandbox exactly like a preset's memory
+            raw_mem = body.get("paths", [])
+            if isinstance(raw_mem, list) and all(isinstance(v, str) for v in raw_mem):
+                mk, mkpat = _split_keep("targets.memory", raw_mem)
+                memory_keep_paths.extend(mk)
+                memory_keep_patterns.extend(mkpat)
         if scope not in FILE_SCOPES:
             raise ConfigError(
                 f"[targets.{scope}] is not a known scope "
@@ -464,12 +503,18 @@ def _parse(data: Mapping[str, object], source: Path) -> Config:
         targets[scope] = tuple(merged)
 
     # The snapshot store protects itself: it is always on the keep-list.
-    keep = KeepList(
+    hard_keep = KeepList(
         paths=(*keep_paths, *preset_keep_paths, snapshot_dir),
         patterns=(*keep_patterns, *preset_keep_patterns),
     )
+    # ... and every other scope additionally keeps the memory targets.
+    keep = KeepList(
+        paths=(*hard_keep.paths, *memory_keep_paths),
+        patterns=(*hard_keep.patterns, *memory_keep_patterns),
+    )
     return Config(
         keep=keep,
+        hard_keep=hard_keep,
         targets=targets,
         remote=remote,
         symlinked_targets=tuple(symlinked_targets),
@@ -494,7 +539,8 @@ def load(path: str | Path | None = None) -> Config:
     if not cfg_path.exists():
         if explicit:
             raise ConfigError(f"config file not found: {cfg_path}")
-        return Config(keep=KeepList(paths=(DEFAULT_SNAPSHOT_DIR.expanduser().resolve(),)))
+        store_only = KeepList(paths=(DEFAULT_SNAPSHOT_DIR.expanduser().resolve(),))
+        return Config(keep=store_only, hard_keep=store_only)
     try:
         with cfg_path.open("rb") as fh:
             data = tomllib.load(fh)

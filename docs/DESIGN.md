@@ -55,11 +55,27 @@ Wipes are addressed by scope, least-blast-radius first:
 | `session` | current conversation/thread + its runtime context | between tasks |
 | `rag` | RAG vectors / embedded memory (a collection or a filter) | stale/biased retrieval |
 | `sandbox` | tool sandbox, temp, downloads | after experimenting |
+| `memory` | the harness's durable, agent-written memory (auto-memory dirs, memory DBs) | forget what it learned |
 | `models` | unload resident models, flush KV, drop warm cache | force a cold, clean reload |
 | `remote` | provider-side stored state (files, vector stores, batches), per-provider opt-in | cloud hygiene |
 | `all` | everything above | factory reset |
 
 Scopes compose: `neurailyzer wipe session sandbox`.
+
+**Memory is kept by every scope but its own.** A preset's `memory` templates
+are wipe targets for the `memory` scope and keep-list entries for every other
+scope (`Config.keep_for`). `wipe session` therefore never takes memory by
+surprise; `wipe memory` and `wipe all` do. Restore honours the keep-list
+*without* the memory entries (`Config.hard_keep`), so a memory wipe is as
+reversible as any other. Over MCP, `memory` may be planned but never
+committed: the agent asking is the one whose record would vanish.
+
+**Time windows.** `--after T` and `--before T` narrow any file scope to the
+entries whose own mtime (`lstat`, never the link's destination) falls in the
+window. `--after` is the neuralizer flash (forget everything since T);
+`--before` is the retention cut. The window is per file: a database file goes
+whole or stays whole, and the plan names each such file. It never applies to
+`remote`, and the pre-wipe snapshot covers the whole root regardless.
 
 **Presets** (`docs/../src/neurailyzer/presets.py`) map a known harness to the
 scopes above plus its keep-list, so `neurailyzer detect --enable` configures a
@@ -108,7 +124,7 @@ Every `Wiper` implements **`plan()`** (returns what *would* change — the dry-r
 
 ## 8. Keep-list
 
-A configurable allow-list of paths / collections / memory keys that are **never** wiped — your app's durable long-term memory, pinned notes, and NeurAIlyzer's own snapshot store. If a wipe target intersects the keep-list, the adapter skips it and **reports the skip** — it never silently honors *or* silently ignores a keep-list entry. This is how "keep what matters" works: you mark it, we leave it. No summarizing, no compression — just protection.
+A configurable allow-list of paths / collections / memory keys that are **never** wiped — credentials, settings, the harness's own install, pinned notes, and NeurAIlyzer's own snapshot store. (A harness's durable memory is the `memory` scope, §4: kept by every other scope, wiped only when asked by name.) If a wipe target intersects the keep-list, the adapter skips it and **reports the skip** — it never silently honors *or* silently ignores a keep-list entry. This is how "keep what matters" works: you mark it, we leave it. No summarizing, no compression — just protection.
 
 ## 9. Safety rails
 
@@ -117,6 +133,8 @@ A configurable allow-list of paths / collections / memory keys that are **never*
 - **Keep-list.** Honored on every wipe (§8).
 - **Scoped credentials.** Remote adapters read least-privilege, per-provider tokens from the **environment** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`) — never a broad admin token, never logged, never stored in config. OS-keyring sourcing is a possible future addition; today it is env vars only.
 - **Confirmation token** for `--scope all --commit` (type the target name).
+- **Human-only levers over MCP.** `all`, `remote` and `memory` can be planned by an agent but committed only at the CLI.
+- **Time windows refuse the remote scope.** A provider API has no per-item clock; applying a window there would silently delete more than asked on the one scope that cannot be restored.
 
 ## 10. Threat model
 

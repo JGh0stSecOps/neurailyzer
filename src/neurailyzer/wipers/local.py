@@ -1,4 +1,4 @@
-"""Local adapters -- file-tree state (``session`` and ``sandbox`` scopes).
+"""Local adapters -- file-tree state (``session``, ``sandbox`` and ``memory`` scopes).
 
 ``PathWiper`` resets the file trees a scope's config points at. Safety
 properties, uniform across platforms:
@@ -10,6 +10,10 @@ properties, uniform across platforms:
 - **read-only files** (the Windows attribute) are cleared and removed.
 - the target roots themselves survive -- a wipe empties them, it doesn't
   delete the workspace.
+- **time window**: with a ``TimeWindow`` only entries whose own mtime
+  (``lstat``: the link, never its destination) fall inside it are touched;
+  the rest are skipped and *counted* in the plan. Boundaries are per file,
+  so a database file goes whole or stays whole -- the plan says so.
 """
 
 from __future__ import annotations
@@ -21,7 +25,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ..config import KeepList
+from ..timewindow import TimeWindow
 from .base import WipePlan, Wiper
+
+#: a file that holds many records under one mtime: a time window is coarse here
+_DB_MARKERS = (".sqlite", ".db")
 
 
 def _walk(root: Path) -> tuple[list[Path], list[Path], list[str]]:
@@ -76,34 +84,79 @@ def _force_unlink(path: Path) -> None:
         path.unlink()
 
 
+def _looks_like_db(p: Path) -> bool:
+    name = p.name.lower()
+    return any(m in name for m in _DB_MARKERS)
+
+
 class PathWiper(Wiper):
     """Wipes the contents of configured file trees, keep-list excepted."""
 
-    def __init__(self, scope: str, roots: Sequence[Path], keep: KeepList) -> None:
+    def __init__(
+        self,
+        scope: str,
+        roots: Sequence[Path],
+        keep: KeepList,
+        *,
+        window: TimeWindow | None = None,
+    ) -> None:
         self.scope = scope
         self.roots = tuple(roots)
         self.keep = keep
+        self.window = window if window is not None and not window.is_open else None
 
-    def _survey(self) -> tuple[list[Path], list[Path], list[Path], list[str]]:
-        """(doomed entries, doomed dirs, keep-skipped paths, errors)."""
+    def _in_window(self, p: Path) -> bool:
+        if self.window is None:
+            return True
+        try:
+            return self.window.contains(os.lstat(p).st_mtime)
+        except OSError:
+            # cannot date it, so it stays: the wiper never acts on a guess
+            return False
+
+    def _survey(self) -> tuple[list[Path], list[Path], list[Path], list[str], list[Path]]:
+        """(doomed entries, doomed dirs, keep-skipped, errors, out-of-window)."""
         doomed: list[Path] = []
         doomed_dirs: list[Path] = []
         skipped: list[Path] = []
         errors: list[str] = []
+        outside: list[Path] = []
         for root in self.roots:
             entries, dirs, errs = _walk(root)
             errors.extend(errs)
             for p in entries:
-                (skipped if self.keep.protects(p) else doomed).append(p)
+                if self.keep.protects(p):
+                    skipped.append(p)
+                elif not self._in_window(p):
+                    outside.append(p)
+                else:
+                    doomed.append(p)
             for d in dirs:
                 if self.keep.protects(d) or self.keep.shelters(d):
                     skipped.append(d)
                 else:
+                    # a dir still holding out-of-window files simply fails rmdir
                     doomed_dirs.append(d)
-        return doomed, doomed_dirs, skipped, errors
+        return doomed, doomed_dirs, skipped, errors, outside
+
+    def _window_notes(self, doomed: list[Path], outside: list[Path]) -> tuple[str, ...]:
+        if self.window is None:
+            return ()
+        notes = [f"time window: {self.window.describe()}"]
+        if outside:
+            notes.append(
+                f"time-window skip: {len(outside)} file(s)/link(s) outside the window left alone"
+            )
+        dbs = sorted(str(p) for p in (*doomed, *outside) if _looks_like_db(p))
+        if dbs:
+            notes.append(
+                "time window is per FILE: a database file carries one mtime for "
+                "every row, so it goes whole or stays whole: " + ", ".join(dbs)
+            )
+        return tuple(notes)
 
     def plan(self) -> WipePlan:
-        doomed, doomed_dirs, skipped, errors = self._survey()
+        doomed, doomed_dirs, skipped, errors, outside = self._survey()
         size = sum(p.stat().st_size for p in doomed if p.is_file() and not p.is_symlink())
         return WipePlan(
             scope=self.scope,
@@ -116,13 +169,14 @@ class PathWiper(Wiper):
             reversible=True,  # core snapshots before committing
             complete=not errors,
             notes=(
+                *self._window_notes(doomed, outside),
                 *(f"keep-list skip: {p}" for p in sorted(map(str, skipped))),
                 *(f"UNREADABLE: {e}" for e in errors),
             ),
         )
 
     def commit(self) -> WipePlan:
-        doomed, doomed_dirs, skipped, errors = self._survey()
+        doomed, doomed_dirs, skipped, errors, outside = self._survey()
         removed = 0
         for p in doomed:
             try:
@@ -144,6 +198,7 @@ class PathWiper(Wiper):
             reversible=True,
             complete=not errors,
             notes=(
+                *self._window_notes(doomed, outside),
                 *(f"keep-list skip: {p}" for p in sorted(map(str, skipped))),
                 *(f"UNREADABLE: {e}" for e in errors),
             ),
@@ -154,7 +209,8 @@ class PathWiper(Wiper):
 
         A subtree we could not read may still hold the very files the user
         asked to destroy; reporting "verified" there is a false assurance of
-        deletion, which for a privacy tool is the worst possible lie.
+        deletion, which for a privacy tool is the worst possible lie. With a
+        time window, "nothing left" means nothing left INSIDE the window.
         """
-        doomed, _dirs, _skipped, errors = self._survey()
+        doomed, _dirs, _skipped, errors, _outside = self._survey()
         return not doomed and not errors

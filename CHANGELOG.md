@@ -6,6 +6,31 @@ All notable changes to NeurAIlyzer are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — the neuralizer actually forgets
+- **`memory` scope.** A preset's durable agent-written memory (Claude Code
+  `projects/*/memory`, Codex `memories_*.sqlite*`, Hermes `memories/` and
+  `memory_store.db*`, Grok `memory/`) is now its own scope instead of a
+  permanent keep-list entry. Every *other* scope still keeps it
+  (`Config.keep_for`), so `wipe session` behaves exactly as before; `wipe
+  memory` and `wipe all --confirm all` take it. Restore uses the keep-list
+  *without* the memory entries (`Config.hard_keep`), so a memory wipe restores
+  byte-for-byte like any other. Over MCP, `memory` can be planned but not
+  committed — the agent asking is the one whose record would vanish.
+- **Time windows.** `wipe` and `list-state` take `--after <when>` and
+  `--before <when>` (ISO-8601, or `30m`/`12h`/`7d`/`2w` back from now).
+  `--after` forgets everything since a moment; `--before` is a retention cut.
+  Judged per file by `lstat` mtime; out-of-window entries are skipped and
+  counted; database files are named in the plan because they go whole or stay
+  whole. Refused on `remote`. The MCP `nl_wipe` tool takes `after`/`before`.
+- `neurailyzer.timewindow` module (`TimeWindow`, `parse_when`).
+
+### Changed
+- `wipe all` now includes `memory`. Before, the README promised to reset an
+  agent's "memory" while the `claude-code` preset protected it under every
+  scope — the docs lied. `all` is the one command that forgets everything,
+  and it still snapshots first.
+- `list-state` lists the `memory` scope.
+
 ## [0.1.0] - 2026-08-06
 
 First tagged alpha. `main` now matches the hardened `dev` line — earlier `main`
